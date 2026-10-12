@@ -2,7 +2,8 @@ FROM node:22-alpine AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
-COPY tsconfig.json prisma ./
+COPY tsconfig.json ./
+COPY prisma/ ./prisma/
 COPY src ./src
 RUN npx prisma generate --schema prisma/schema.prisma && npm run build
 

@@ -104,7 +104,7 @@ async function getUserById(id: string) {
 }
 
 async function getUserSummary(user: any) {
-  const profile = user?.profile ?? getProfileForUserId(user.id);
+  const profile = user && 'profile' in user ? user.profile : await getProfilePayload(user.id);
   const safeProfile = profile
     ? {
         displayName: profile.displayName ?? user.name,

@@ -1,8 +1,18 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { app } from '../app.js';
+import { signAccessToken, hashSessionToken } from '../lib/auth.js';
 import { fallbackStore } from '../lib/fallbackStore.js';
+import { isDatabaseAvailable, prisma } from '../lib/prisma.js';
 import { socialStore } from '../lib/socialStore.js';
+
+vi.mock('../lib/prisma.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/prisma.js')>();
+  return {
+    ...actual,
+    isDatabaseAvailable: vi.fn().mockResolvedValue(false),
+  };
+});
 
 function getCookieHeader(response: { headers: Record<string, string | string[] | undefined> }) {
   const value = response.headers['set-cookie'];
@@ -16,8 +26,13 @@ function getCookieHeader(response: { headers: Record<string, string | string[] |
 
 describe('social platform features', () => {
   beforeEach(() => {
+    vi.mocked(isDatabaseAvailable).mockReset().mockResolvedValue(false);
     fallbackStore.clear();
     socialStore.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('authenticated user can create a post', async () => {
@@ -489,6 +504,88 @@ describe('social platform features', () => {
     expect(duplicateView.body.viewCount).toBe(1);
     expect((await request(app).delete(`/api/stories/${bobStory.body.story.id}`).set('Cookie', getCookieHeader(aliceLogin))).status).toBe(404);
     expect((await request(app).delete(`/api/stories/${bobStory.body.story.id}`).set('Cookie', getCookieHeader(bobLogin))).status).toBe(200);
+  });
+
+  it('uses database profiles and records story views without accessing in-memory storage', async () => {
+    const viewerId = 'database-viewer';
+    const authorId = 'database-author';
+    const storyId = 'database-story';
+    const token = signAccessToken({ sub: viewerId, email: 'viewer@example.com', role: 'USER' });
+
+    vi.mocked(isDatabaseAvailable).mockResolvedValue(true);
+    vi.spyOn(prisma.session, 'findFirst').mockResolvedValue({ id: 'database-session' } as never);
+    vi.spyOn(prisma.user, 'findUnique').mockResolvedValue({
+      id: viewerId,
+      email: 'viewer@example.com',
+      name: 'Viewer',
+      role: 'USER',
+      status: 'ACTIVE',
+    } as never);
+    vi.spyOn(prisma.follow, 'findMany').mockResolvedValue([{ followingId: authorId }] as never);
+    vi.spyOn(prisma.follow, 'findUnique').mockResolvedValue({ id: 'database-follow' } as never);
+    vi.spyOn(prisma.block, 'findUnique').mockResolvedValue(null);
+    vi.spyOn(prisma.story, 'findMany').mockResolvedValue([{
+      id: storyId,
+      authorId,
+      text: 'A database-backed story',
+      mediaUrl: null,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+      author: {
+        id: authorId,
+        name: 'Author',
+        email: 'author@example.com',
+        profile: null,
+      },
+      views: [],
+      _count: { views: 0 },
+    }] as never);
+    vi.spyOn(prisma.story, 'findFirst').mockResolvedValue({ id: storyId, authorId } as never);
+    const upsertView = vi.spyOn(prisma.storyView, 'upsert').mockResolvedValue({} as never);
+    vi.spyOn(prisma.storyView, 'count').mockResolvedValue(1);
+    vi.spyOn(socialStore, 'state', 'get').mockImplementation(() => {
+      throw new Error('In-memory fallback storage is disabled in production.');
+    });
+
+    const stories = await request(app)
+      .get('/api/stories')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(stories.status).toBe(200);
+    expect(stories.body.stories[0]).toMatchObject({
+      id: storyId,
+      viewCount: 0,
+      viewedByMe: false,
+      author: {
+        id: authorId,
+        handle: 'author',
+        profile: {
+          displayName: 'Author',
+          username: 'author',
+          avatarUrl: null,
+        },
+      },
+    });
+
+    const firstView = await request(app)
+      .post(`/api/stories/${storyId}/view`)
+      .set('Authorization', `Bearer ${token}`);
+    const duplicateView = await request(app)
+      .post(`/api/stories/${storyId}/view`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(firstView.status).toBe(200);
+    expect(duplicateView.status).toBe(200);
+    expect(firstView.body).toEqual({ viewed: true, viewCount: 1 });
+    expect(duplicateView.body).toEqual({ viewed: true, viewCount: 1 });
+    expect(upsertView).toHaveBeenCalledTimes(2);
+    expect(upsertView).toHaveBeenCalledWith(expect.objectContaining({
+      where: { storyId_viewerId: { storyId, viewerId } },
+      create: { storyId, viewerId },
+    }));
+    expect(prisma.session.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ tokenHash: hashSessionToken(token) }),
+    }));
   });
 
   it('does not create a conversation with a missing user', async () => {

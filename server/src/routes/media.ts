@@ -8,6 +8,17 @@ import { socialStore } from '../lib/socialStore.js';
 import { requireActiveAccountIfAuthenticated, requireAuth } from '../middleware/auth.js';
 
 const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
+const attachmentTypes = new Map([
+  ['audio/webm', 'webm'],
+  ['audio/ogg', 'ogg'],
+  ['audio/mpeg', 'mp3'],
+  ['audio/mp4', 'm4a'],
+  ['video/webm', 'webm'],
+  ['video/mp4', 'mp4'],
+  ['video/ogg', 'ogg'],
+  ['application/pdf', 'pdf'],
+  ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'docx'],
+]);
 
 export const mediaRouter = Router();
 
@@ -31,6 +42,69 @@ function uploadMediaFile(req: Request, res: Response, next: NextFunction) {
     }
     return next(error);
   });
+}
+
+function uploadAttachmentFile(req: Request, res: Response, next: NextFunction) {
+  multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MAX_MEDIA_BYTES, files: 1 },
+    fileFilter(_request, file, callback) {
+      const extension = file.originalname.split('.').at(-1)?.toLowerCase();
+      if (attachmentTypes.get(file.mimetype) !== extension) {
+        callback(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'file'));
+        return;
+      }
+      callback(null, true);
+    },
+  }).single('file')(req, res, (error) => {
+    if (error instanceof multer.MulterError) {
+      const tooLarge = error.code === 'LIMIT_FILE_SIZE';
+      return res.status(tooLarge ? 413 : 400).json({
+        message: tooLarge ? 'Attachments must be 10 MB or smaller.' : 'Choose a supported audio, video, PDF, or DOCX file.',
+      });
+    }
+    return next(error);
+  });
+}
+
+function hasValidFileSignature(contentType: string, bytes: Buffer) {
+  if (contentType === 'application/pdf') return bytes.subarray(0, 5).toString() === '%PDF-';
+  if (contentType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+    return bytes.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+  }
+  if (contentType.endsWith('/webm')) return bytes.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+  if (contentType.endsWith('/ogg')) return bytes.subarray(0, 4).toString() === 'OggS';
+  if (contentType === 'video/mp4' || contentType === 'audio/mp4') return bytes.subarray(4, 8).toString() === 'ftyp';
+  if (contentType === 'audio/mpeg') {
+    return bytes.subarray(0, 3).toString() === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);
+  }
+  return false;
+}
+
+async function canReadAttachment(key: string, ownerUserId: string, viewerId: string) {
+  if (ownerUserId === viewerId) return true;
+  const mediaUrl = `/api/media/files/${key}`;
+  if (!(await isDatabaseAvailable())) {
+    return socialStore.state.messages.some((message) =>
+      message.mediaUrl === mediaUrl
+      && !message.deletedAt
+      && (!message.expiresAt || new Date(message.expiresAt).getTime() > Date.now())
+      && socialStore.state.conversationParticipants.some((participant) =>
+        participant.conversationId === message.conversationId
+        && participant.userId === viewerId
+        && !participant.leftAt,
+      ),
+    );
+  }
+  return Boolean(await prisma.message.findFirst({
+    where: {
+      mediaUrl,
+      deletedAt: null,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      conversation: { participants: { some: { userId: viewerId, leftAt: null } } },
+    },
+    select: { id: true },
+  }));
 }
 
 async function canReadUploadedMedia(key: string, ownerUserId: string, viewerId: string) {
@@ -133,6 +207,22 @@ mediaRouter.post('/uploads', requireAuth, uploadMediaFile, async (req, res, next
   }
 });
 
+mediaRouter.post('/attachments', requireAuth, uploadAttachmentFile, async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'Choose an attachment to upload.' });
+    if (!hasValidFileSignature(req.file.mimetype, req.file.buffer)) {
+      return res.status(400).json({ message: 'The uploaded file does not match its declared type.' });
+    }
+    const extension = attachmentTypes.get(req.file.mimetype);
+    if (!extension) return res.status(400).json({ message: 'Choose a supported audio, video, PDF, or DOCX file.' });
+    const stored = await getMediaStorage(env.NODE_ENV).putAttachment(req.file.buffer, req.file.mimetype, extension, req.user!.id);
+    return res.status(201).json({ mediaUrl: stored.publicUrl, contentType: req.file.mimetype });
+  } catch (error) {
+    if (error instanceof MediaStorageUnavailableError) return res.status(503).json({ message: 'Persistent attachment storage is not configured.' });
+    return next(error);
+  }
+});
+
 mediaRouter.get('/avatars/:key', requireActiveAccountIfAuthenticated, async (req, res, next) => {
   try {
     const key = String(req.params.key);
@@ -149,6 +239,25 @@ mediaRouter.get('/avatars/:key', requireActiveAccountIfAuthenticated, async (req
     return res.send(object.bytes);
   } catch (error) {
     if (error instanceof MediaStorageUnavailableError) return res.status(503).json({ message: 'Profile image storage is not configured.' });
+    return next(error);
+  }
+});
+
+mediaRouter.get('/files/:key', requireAuth, async (req, res, next) => {
+  try {
+    const key = String(req.params.key);
+    if (!/^[0-9a-f-]{36}\.(?:webm|mp4|ogg|mp3|m4a|pdf|docx)$/.test(key)) return res.status(404).end();
+    const object = await getMediaStorage(env.NODE_ENV).get(key);
+    if (!object || !object.ownerUserId || !(await canReadAttachment(key, object.ownerUserId, req.user!.id))) {
+      return res.status(404).end();
+    }
+    res.setHeader('Content-Type', object.contentType);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Vary', 'Cookie, Authorization');
+    return res.send(object.bytes);
+  } catch (error) {
+    if (error instanceof MediaStorageUnavailableError) return res.status(503).json({ message: 'Persistent attachment storage is not configured.' });
     return next(error);
   }
 });

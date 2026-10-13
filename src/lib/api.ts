@@ -21,6 +21,24 @@ export async function uploadMedia(file: File) {
   });
 }
 
+export async function uploadMessageAttachment(file: File) {
+  const body = new FormData();
+  body.append('file', file);
+  return apiRequest<{ mediaUrl: string; contentType: string }>('/api/media/attachments', {
+    method: 'POST',
+    body,
+  });
+}
+
+export async function fetchMediaBlob(mediaUrl: string, signal: AbortSignal) {
+  const headers = new Headers()
+  const accessToken = getStoredAccessToken()
+  if (accessToken) headers.set('Authorization', `******`)
+  const response = await fetch(resolveMediaUrl(mediaUrl), { credentials: 'include', headers, signal })
+  if (!response.ok) throw new ApiError(response.status, 'Unable to load this attachment.')
+  return response.blob()
+}
+
 export class ApiError extends Error {
   status: number | null
   details?: unknown

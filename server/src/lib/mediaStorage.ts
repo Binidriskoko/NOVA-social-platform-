@@ -4,6 +4,7 @@ import { socialStore } from './socialStore.js';
 
 export interface MediaStorage {
   put(bytes: Buffer, contentType: string, ownerUserId?: string): Promise<{ key: string; publicUrl: string }>;
+  putAttachment(bytes: Buffer, contentType: string, extension: string, ownerUserId: string): Promise<{ key: string; publicUrl: string }>;
   setOwner(key: string, ownerUserId: string): Promise<boolean>;
   delete(key: string): Promise<void>;
   get(key: string): Promise<{ bytes: Buffer; contentType: string; ownerUserId: string | null } | null>;
@@ -23,6 +24,12 @@ class MemoryMediaStorage implements MediaStorage {
     const key = `${randomUUID()}.webp`;
     this.objects.set(key, { bytes: Buffer.from(bytes), contentType, ownerUserId: ownerUserId ?? null });
     return { key, publicUrl: `/api/media/avatars/${key}` };
+  }
+
+  async putAttachment(bytes: Buffer, contentType: string, extension: string, ownerUserId: string) {
+    const key = `${randomUUID()}.${extension}`;
+    this.objects.set(key, { bytes: Buffer.from(bytes), contentType, ownerUserId });
+    return { key, publicUrl: `/api/media/files/${key}` };
   }
 
   async delete(key: string) {
@@ -64,6 +71,19 @@ class DatabaseMediaStorage implements MediaStorage {
       key,
       publicUrl: `/api/media/avatars/${key}`,
     };
+  }
+
+  async putAttachment(bytes: Buffer, contentType: string, extension: string, ownerUserId: string) {
+    const key = `${randomUUID()}.${extension}`;
+    await prisma.registrationMediaObject.create({
+      data: {
+        key,
+        bytes: Buffer.from(bytes),
+        contentType,
+        ownerUserId,
+      },
+    });
+    return { key, publicUrl: `/api/media/files/${key}` };
   }
 
   async delete(key: string) {
@@ -120,9 +140,14 @@ export function mediaKeyFromUrl(url: string) {
   return match?.[1] ?? null;
 }
 
+export function attachmentMediaKeyFromUrl(url: string) {
+  const match = /^\/api\/media\/files\/([0-9a-f-]{36}\.(?:webm|mp4|ogg|mp3|m4a|pdf|docx))$/.exec(url);
+  return match?.[1] ?? null;
+}
+
 export async function uploadedMediaBelongsTo(url: string, userId: string, nodeEnv: string) {
   if (!url.startsWith('/api/media/')) return true;
-  const key = mediaKeyFromUrl(url);
+  const key = mediaKeyFromUrl(url) ?? attachmentMediaKeyFromUrl(url);
   if (!key) return false;
 
   const object = await getMediaStorage(nodeEnv).get(key);
@@ -130,7 +155,8 @@ export async function uploadedMediaBelongsTo(url: string, userId: string, nodeEn
   if (object && object.ownerUserId !== null && object.ownerUserId !== userId) return false;
 
   if (!(await isDatabaseAvailable())) {
-    return socialStore.state.profiles.some((profile) => profile.userId === userId && (profile.avatarUrl === url || profile.coverUrl === url))
+    return object?.ownerUserId === userId
+      || socialStore.state.profiles.some((profile) => profile.userId === userId && (profile.avatarUrl === url || profile.coverUrl === url))
       || socialStore.state.posts.some((post) => post.authorId === userId && post.imageUrl === url)
       || socialStore.state.stories.some((story) => story.authorId === userId && story.mediaUrl === url)
       || socialStore.state.messages.some((message) => message.senderId === userId && message.mediaUrl === url);
@@ -155,5 +181,5 @@ export async function uploadedMediaBelongsTo(url: string, userId: string, nodeEn
     }),
   ]);
 
-  return Boolean(profile || posts.length || stories || message);
+  return Boolean(object?.ownerUserId === userId || profile || posts.length || stories || message);
 }

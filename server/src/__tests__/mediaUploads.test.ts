@@ -95,4 +95,62 @@ describe('authenticated media uploads', () => {
     expect((await request(app).get(messageUpload.body.mediaUrl).set('Cookie', carol.auth)).status).toBe(200);
     expect((await request(app).get(messageUpload.body.mediaUrl).set('Cookie', bob.auth)).status).toBe(404);
   });
+
+  it('uploads voice, video, PDF, and DOCX attachments and serves them only to message participants', async () => {
+    const alice = await register('AttachmentAlice');
+    const bob = await register('AttachmentBob');
+    const outsider = await register('AttachmentOutsider');
+    const samples = [
+      { type: 'VOICE', name: 'voice.webm', mime: 'audio/webm', bytes: Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 1]) },
+      { type: 'VIDEO', name: 'clip.mp4', mime: 'video/mp4', bytes: Buffer.from('0000ftypisom') },
+      { type: 'DOCUMENT', name: 'notes.pdf', mime: 'application/pdf', bytes: Buffer.from('%PDF-1.7 sample') },
+      { type: 'DOCUMENT', name: 'notes.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', bytes: Buffer.from([0x50, 0x4b, 0x03, 0x04, 1]) },
+    ];
+    const conversation = await request(app).post('/api/conversations').set('Cookie', alice.auth).send({ participantId: bob.user.id });
+
+    for (const sample of samples) {
+      const upload = await request(app)
+        .post('/api/media/attachments')
+        .set('Cookie', alice.auth)
+        .attach('file', sample.bytes, { filename: sample.name, contentType: sample.mime });
+      expect(upload.status).toBe(201);
+      expect((await request(app).get(upload.body.mediaUrl).set('Cookie', alice.auth)).status).toBe(200);
+      expect((await request(app).get(upload.body.mediaUrl).set('Cookie', bob.auth)).status).toBe(404);
+      if (sample.type === 'VOICE') {
+        expect((await request(app)
+          .post(`/api/conversations/${conversation.body.conversation.id}/messages`)
+          .set('Cookie', alice.auth)
+          .send({ contentType: 'DOCUMENT', mediaUrl: upload.body.mediaUrl })).status).toBe(400);
+      }
+      expect((await request(app)
+        .post(`/api/conversations/${conversation.body.conversation.id}/messages`)
+        .set('Cookie', alice.auth)
+        .send({ contentType: sample.type, mediaUrl: upload.body.mediaUrl })).status).toBe(201);
+      expect((await request(app).get(upload.body.mediaUrl).set('Cookie', bob.auth)).status).toBe(200);
+      expect((await request(app).get(upload.body.mediaUrl).set('Cookie', outsider.auth)).status).toBe(404);
+    }
+
+    const invalidSignature = await request(app)
+      .post('/api/media/attachments')
+      .set('Cookie', alice.auth)
+      .attach('file', Buffer.from('not a PDF'), { filename: 'bad.pdf', contentType: 'application/pdf' });
+    expect(invalidSignature.status).toBe(400);
+    const wrongMime = await request(app)
+      .post('/api/media/attachments')
+      .set('Cookie', alice.auth)
+      .attach('file', Buffer.from('%PDF-1.7'), { filename: 'bad.pdf', contentType: 'application/octet-stream' });
+    expect(wrongMime.status).toBe(400);
+
+    const voice = socialStore.state.messages.find((message) => message.contentType === 'VOICE');
+    expect(voice).toBeDefined();
+    await request(app).delete(`/api/messages/${voice!.id}`).set('Cookie', alice.auth);
+    expect((await request(app).get(voice!.mediaUrl!).set('Cookie', bob.auth)).status).toBe(404);
+  });
+
+  it('rejects attachment uploads without authentication and enforces the media size cap', async () => {
+    const alice = await register('AttachmentLimitAlice');
+    const bytes = Buffer.alloc(10 * 1024 * 1024 + 1);
+    expect((await request(app).post('/api/media/attachments').attach('file', Buffer.from('%PDF-1.7'), { filename: 'notes.pdf', contentType: 'application/pdf' })).status).toBe(401);
+    expect((await request(app).post('/api/media/attachments').set('Cookie', alice.auth).attach('file', bytes, { filename: 'large.pdf', contentType: 'application/pdf' })).status).toBe(413);
+  });
 });

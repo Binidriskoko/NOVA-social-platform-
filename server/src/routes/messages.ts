@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma, isDatabaseAvailable } from '../lib/prisma.js';
 import { socialStore, type MessageRecord } from '../lib/socialStore.js';
 import { requireAuth, requireActiveAccountIfAuthenticated } from '../middleware/auth.js';
-import { mediaKeyFromUrl, uploadedMediaBelongsTo } from '../lib/mediaStorage.js';
+import { attachmentMediaKeyFromUrl, mediaKeyFromUrl, uploadedMediaBelongsTo, getMediaStorage } from '../lib/mediaStorage.js';
 import { reviewContentForSafety } from '../lib/moderation.js';
 import { emitConversationEvent, subscribeToUserEvents } from '../lib/realtime.js';
 import { findUserById } from '../lib/fallbackStore.js';
@@ -21,7 +21,7 @@ const createConversationSchema = z.object({
 });
 
 function isAllowedMessageMediaUrl(value: string) {
-  if (mediaKeyFromUrl(value)) return true;
+  if (mediaKeyFromUrl(value) || attachmentMediaKeyFromUrl(value)) return true;
   try {
     return new URL(value).protocol === 'https:';
   } catch {
@@ -355,7 +355,26 @@ messagesRouter.post('/conversations/:id/messages', requireAuth, async (req, res)
     return res.status(403).json({ message: 'You do not have access to this conversation.' });
   }
   if (payload.mediaUrl && !(await uploadedMediaBelongsTo(payload.mediaUrl, userId, process.env.NODE_ENV ?? 'development'))) {
-    return res.status(403).json({ message: 'You can only attach images that you uploaded.' });
+    return res.status(403).json({ message: 'You can only attach media that you uploaded.' });
+  }
+  const attachmentKey = payload.mediaUrl ? attachmentMediaKeyFromUrl(payload.mediaUrl) : null;
+  if (attachmentKey) {
+    const attachment = await getMediaStorage(process.env.NODE_ENV ?? 'development').get(attachmentKey);
+    const supportedForType = payload.contentType === 'VOICE'
+      ? attachment?.contentType.startsWith('audio/')
+      : payload.contentType === 'VIDEO'
+        ? attachment?.contentType.startsWith('video/')
+        : payload.contentType === 'DOCUMENT'
+          ? ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(attachment?.contentType ?? '')
+          : false;
+    if (!supportedForType) return res.status(400).json({ message: 'This attachment type does not match the message type.' });
+  }
+  const imageKey = payload.mediaUrl ? mediaKeyFromUrl(payload.mediaUrl) : null;
+  if (imageKey) {
+    const image = await getMediaStorage(process.env.NODE_ENV ?? 'development').get(imageKey);
+    if (payload.contentType !== 'IMAGE' || image?.contentType !== 'image/webp') {
+      return res.status(400).json({ message: 'This attachment type does not match the message type.' });
+    }
   }
 
   const dbAvailable = await isDatabaseAvailable();

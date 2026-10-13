@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
-import { Archive, ArrowLeft, Image, Megaphone, MessageCircleMore, Phone, Pin, Search, SendHorizontal, Star, UsersRound, VolumeX } from 'lucide-react'
+import { Archive, ArrowLeft, Image, Megaphone, MessageCircleMore, Mic, Phone, Pin, Search, SendHorizontal, Square, Star, UsersRound, VolumeX } from 'lucide-react'
 import { Avatar } from '../components/ui/Avatar'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { useAuth } from '../context/AuthContext'
-import { apiRequest, resolveMediaUrl, uploadMedia } from '../lib/api'
+import { apiRequest, fetchMediaBlob, resolveMediaUrl, uploadMedia, uploadMessageAttachment } from '../lib/api'
 import { openAuthenticatedEventStream } from '../lib/eventStream'
 
 type ConversationParticipant = { userId: string; role?: string; user?: { id: string; name: string } }
@@ -44,6 +44,48 @@ type MessageItem = {
 }
 type DirectoryUser = { id: string; name: string }
 
+function MessageMediaAttachment({ message, isOwn }: { message: MessageItem; isOwn: boolean }) {
+  const [loadedMedia, setLoadedMedia] = useState<{ url: string; source: string; error: string }>({ url: '', source: '', error: '' })
+  const mediaUrl = message.mediaUrl ?? ''
+  const isUploaded = mediaUrl.startsWith('/api/media/')
+
+  useEffect(() => {
+    if (!isUploaded) return
+    const controller = new AbortController()
+    let objectUrl = ''
+    void fetchMediaBlob(mediaUrl, controller.signal).then((blob) => {
+      if (controller.signal.aborted) return
+      objectUrl = URL.createObjectURL(blob)
+      setLoadedMedia({ url: mediaUrl, source: objectUrl, error: '' })
+    }).catch((loadError: unknown) => {
+      if (!controller.signal.aborted) {
+        setLoadedMedia({ url: mediaUrl, source: '', error: loadError instanceof Error ? loadError.message : 'Unable to load this attachment.' })
+      }
+    })
+    return () => {
+      controller.abort()
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [isUploaded, mediaUrl])
+
+  const matchesLoaded = loadedMedia.url === mediaUrl
+  const source = isUploaded ? matchesLoaded ? loadedMedia.source : '' : resolveMediaUrl(mediaUrl)
+  if (isUploaded && !matchesLoaded) return <p className="mb-2 text-xs text-slate-500">Loading attachment…</p>
+  if (matchesLoaded && loadedMedia.error) return <p className="mb-2 text-xs text-rose-700" role="alert">{loadedMedia.error}</p>
+  if (!source) return null
+  if (message.contentType === 'IMAGE') return <a href={source} target="_blank" rel="noreferrer"><img src={source} alt="Message attachment" className="mb-2 max-h-64 rounded-xl object-cover" /></a>
+  if (message.contentType === 'VIDEO') return <video controls src={source} className="mb-2 max-h-64 rounded-xl" />
+  if (message.contentType === 'VOICE') return <audio controls src={source} className="mb-2 max-w-full" />
+  if (message.contentType === 'DOCUMENT') {
+    const filename = mediaUrl.toLowerCase().endsWith('.pdf') ? 'attachment.pdf' : 'attachment.docx'
+    return <div className="mb-2 flex flex-wrap gap-3">
+      <a href={source} target="_blank" rel="noreferrer" className={`underline ${isOwn ? 'text-white' : 'text-indigo-700'}`}>Open document</a>
+      <a href={source} download={filename} className={`underline ${isOwn ? 'text-white' : 'text-indigo-700'}`}>Download document</a>
+    </div>
+  }
+  return null
+}
+
 export function MessagesPage() {
   const { user } = useAuth()
   const [conversations, setConversations] = useState<ConversationListItem[]>([])
@@ -75,13 +117,34 @@ export function MessagesPage() {
   const [media, setMedia] = useState<MessageItem[]>([])
   const [composeType, setComposeType] = useState('TEXT')
   const [mediaUrl, setMediaUrl] = useState('')
-  const [mediaFile, setMediaFile] = useState<File | null>(null)
+  const [mediaFile, setMediaFileState] = useState<File | null>(null)
+  const [mediaPreviewUrl, setMediaPreviewUrl] = useState('')
+  const [recording, setRecording] = useState(false)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const recordingStreamRef = useRef<MediaStream | null>(null)
+  const mediaPreviewUrlRef = useRef('')
   const [contactName, setContactName] = useState('')
   const [contactPhone, setContactPhone] = useState('')
   const [locationLabel, setLocationLabel] = useState('')
   const [latitude, setLatitude] = useState('')
   const [longitude, setLongitude] = useState('')
   const [showArchived, setShowArchived] = useState(false)
+
+  const setMediaFile = (file: File | null) => {
+    if (mediaPreviewUrlRef.current) URL.revokeObjectURL(mediaPreviewUrlRef.current)
+    mediaPreviewUrlRef.current = file ? URL.createObjectURL(file) : ''
+    setMediaPreviewUrl(mediaPreviewUrlRef.current)
+    setMediaFileState(file)
+  }
+
+  useEffect(() => () => {
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+      recorderRef.current.onstop = null
+      recorderRef.current.stop()
+    }
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop())
+    if (mediaPreviewUrlRef.current) URL.revokeObjectURL(mediaPreviewUrlRef.current)
+  }, [])
 
   const loadConversations = async () => {
     try {
@@ -217,9 +280,81 @@ export function MessagesPage() {
   }
 
   const canSend = composeType === 'TEXT' ? Boolean(draft.trim())
-    : ['IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE'].includes(composeType) ? Boolean(mediaUrl.trim() || (composeType === 'IMAGE' && mediaFile))
+    : ['IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE'].includes(composeType) ? Boolean(mediaUrl.trim() || mediaFile)
       : composeType === 'CONTACT' ? Boolean(contactName.trim() && contactPhone.trim())
         : Boolean(latitude.trim() && longitude.trim())
+
+  const selectMediaFile = (file?: File) => {
+    if (!file) {
+      setMediaFile(null)
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setMediaFile(null)
+      setError('Attachments must be 10 MB or smaller.')
+      return
+    }
+    const extension = file.name.split('.').at(-1)?.toLowerCase()
+    const allowed: Record<string, Record<string, string>> = {
+      IMAGE: { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' },
+      VIDEO: { mp4: 'video/mp4', webm: 'video/webm', ogg: 'video/ogg' },
+      DOCUMENT: { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      VOICE: { webm: 'audio/webm', ogg: 'audio/ogg', mp3: 'audio/mpeg', m4a: 'audio/mp4' },
+    }
+    const expectedType = extension ? allowed[composeType]?.[extension] : undefined
+    const actualType = file.type.split(';')[0] || expectedType
+    if (!expectedType || actualType !== expectedType) {
+      setMediaFile(null)
+      setError('Choose a supported file whose type matches its extension.')
+      return
+    }
+    setError('')
+    setMediaUrl('')
+    setMediaFile(file.type === actualType ? file : new File([file], file.name, { type: actualType }))
+  }
+
+  const startVoiceRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setError('Voice recording is not supported by this browser.')
+      return
+    }
+    try {
+      setError('')
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mimeType = ['audio/webm', 'audio/mp4', 'audio/ogg'].find((type) => MediaRecorder.isTypeSupported(type))
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      const chunks: BlobPart[] = []
+      recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data) }
+      recorder.onstop = () => {
+        const type = (recorder.mimeType || mimeType || 'audio/webm').split(';')[0]
+        const extension = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm'
+        const recorded = new File(chunks, `voice-message.${extension}`, { type })
+        if (recorded.size > 10 * 1024 * 1024) {
+          setError('The recording is larger than 10 MB. Record a shorter voice message.')
+          setMediaFile(null)
+        } else {
+          setMediaFile(recorded)
+        }
+        setMediaUrl('')
+        stream.getTracks().forEach((track) => track.stop())
+        recordingStreamRef.current = null
+        recorderRef.current = null
+        setRecording(false)
+      }
+      recordingStreamRef.current = stream
+      recorderRef.current = recorder
+      recorder.start()
+      setRecording(true)
+    } catch (recordingError) {
+      recordingStreamRef.current?.getTracks().forEach((track) => track.stop())
+      recordingStreamRef.current = null
+      setError(recordingError instanceof Error ? `Microphone unavailable: ${recordingError.message}` : 'Microphone permission was denied.')
+    }
+  }
+
+  const stopVoiceRecording = () => {
+    if (recorderRef.current?.state === 'recording') recorderRef.current.stop()
+  }
 
   const handleSendMessage = async (event?: FormEvent) => {
     event?.preventDefault()
@@ -230,7 +365,9 @@ export function MessagesPage() {
     try {
       setSending(true)
       setError('')
-      const attachmentUrl = mediaFile ? (await uploadMedia(mediaFile)).mediaUrl : mediaUrl.trim()
+      const attachmentUrl = mediaFile
+        ? (composeType === 'IMAGE' ? await uploadMedia(mediaFile) : await uploadMessageAttachment(mediaFile)).mediaUrl
+        : mediaUrl.trim()
       if (mediaFile) {
         setMediaUrl(attachmentUrl)
         setMediaFile(null)
@@ -484,12 +621,11 @@ export function MessagesPage() {
                       <div className={`max-w-[78%] rounded-2xl px-3 py-2 text-sm shadow-sm sm:max-w-[70%] ${isOwn ? 'bg-blue-600 text-white' : 'bg-white text-slate-700'}`}>
                         {message.forwardedFromId ? <p className={`mb-1 text-[10px] ${isOwn ? 'text-indigo-100' : 'text-slate-500'}`}>Forwarded</p> : null}
                         {reply ? <p className={`mb-2 border-l-2 pl-2 text-xs ${isOwn ? 'border-indigo-200 text-indigo-100' : 'border-indigo-400 text-slate-500'}`}>{reply.text}</p> : null}
-                        {message.contentType === 'IMAGE' && message.mediaUrl ? <a href={resolveMediaUrl(message.mediaUrl)} target="_blank" rel="noreferrer"><img src={resolveMediaUrl(message.mediaUrl)} crossOrigin={message.mediaUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} alt="Message attachment" className="mb-2 max-h-64 rounded-xl object-cover" /></a> : null}
-                        {message.contentType === 'VIDEO' && message.mediaUrl ? <video controls src={message.mediaUrl} className="mb-2 max-h-64 rounded-xl" /> : null}
+                        {['IMAGE', 'VIDEO', 'VOICE', 'DOCUMENT'].includes(message.contentType ?? '') && message.mediaUrl ? <MessageMediaAttachment message={message} isOwn={isOwn} /> : null}
+                        {message.contentType === 'VOICE' && message.mediaUrl ? <audio controls crossOrigin={message.mediaUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} src={resolveMediaUrl(message.mediaUrl)} className="mb-2 max-w-full" /> : null}
                         {message.text ? <p className="whitespace-pre-wrap">{message.text}</p> : null}
                         {message.contentType === 'CONTACT' && message.metadata ? <p>{String(message.metadata.name ?? 'Contact')} · {String(message.metadata.phone ?? '')}</p> : null}
                         {message.contentType === 'LOCATION' && message.metadata ? <p>{String(message.metadata.label ?? 'Location')} · {String(message.metadata.latitude)}, {String(message.metadata.longitude)}</p> : null}
-                        {['DOCUMENT', 'VOICE'].includes(message.contentType ?? '') && message.mediaUrl ? <a href={message.mediaUrl} target="_blank" rel="noreferrer" className={`underline ${isOwn ? 'text-white' : 'text-indigo-700'}`}>Open {message.contentType?.toLowerCase()}</a> : null}
                         <div className={`mt-1 flex items-center gap-1 text-[10px] ${isOwn ? 'text-indigo-100' : 'text-slate-500'}`}>
                           <span>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
                           {message.editedAt ? <span>· edited</span> : null}
@@ -515,13 +651,28 @@ export function MessagesPage() {
               <form onSubmit={(event) => void handleSendMessage(event)} className="sticky bottom-0 mt-1 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-lg">
                 {replyTarget ? <div className="mb-2 flex items-center justify-between rounded-xl bg-white px-3 py-2 text-xs text-slate-600"><span className="truncate">Replying to: {replyTarget.text || replyTarget.contentType}</span><button type="button" onClick={() => setReplyTarget(null)} aria-label="Cancel reply">×</button></div> : null}
                 <div className="flex flex-wrap gap-2">
-                  <select aria-label="Message type" value={composeType} onChange={(event) => { setComposeType(event.target.value); setMediaFile(null); setMediaUrl('') }} className="rounded-xl border border-slate-200 bg-white px-2 py-2 text-xs text-slate-700">
+                  <select aria-label="Message type" value={composeType} disabled={recording} onChange={(event) => { setComposeType(event.target.value); setMediaFile(null); setMediaUrl('') }} className="rounded-xl border border-slate-200 bg-white px-2 py-2 text-xs text-slate-700">
                     {['TEXT', 'IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE', 'CONTACT', 'LOCATION'].map((type) => <option key={type} value={type}>{type[0] + type.slice(1).toLowerCase()}</option>)}
                   </select>
                   {['IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE'].includes(composeType) ? <input type="url" aria-label="Attachment URL" value={mediaUrl} onChange={(event) => { setMediaUrl(event.target.value); setMediaFile(null) }} placeholder="Attachment URL" className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm" /> : null}
-                  {composeType === 'IMAGE' ? <label className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-xs text-slate-600">Or upload an image (up to 10 MB)
-                    <input type="file" accept="image/jpeg,image/png,image/webp" aria-label="Upload message image" onChange={(event) => { setMediaFile(event.target.files?.[0] ?? null); setMediaUrl('') }} className="mt-1 block w-full text-xs" />
+                  {['IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE'].includes(composeType) ? <label className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-xs text-slate-600">
+                    {composeType === 'IMAGE' ? 'Upload image' : composeType === 'VIDEO' ? 'Choose or capture video' : composeType === 'DOCUMENT' ? 'Choose PDF or DOCX' : 'Choose audio file'} (up to 10 MB)
+                    <input
+                      type="file"
+                      accept={composeType === 'IMAGE' ? 'image/jpeg,image/png,image/webp' : composeType === 'VIDEO' ? 'video/mp4,video/webm,video/ogg' : composeType === 'DOCUMENT' ? '.pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'audio/webm,audio/ogg,audio/mpeg,audio/mp4'}
+                      capture={composeType === 'VIDEO' ? 'environment' : undefined}
+                      aria-label={`Upload message ${composeType.toLowerCase()}`}
+                      onChange={(event) => selectMediaFile(event.target.files?.[0])}
+                      className="mt-1 block w-full text-xs"
+                    />
                   </label> : null}
+                  {composeType === 'VOICE' ? <Button type="button" variant="secondary" size="sm" disabled={sending} onClick={recording ? stopVoiceRecording : () => void startVoiceRecording()} icon={recording ? <Square className="h-4 w-4" aria-hidden="true" /> : <Mic className="h-4 w-4" aria-hidden="true" />}>{recording ? 'Stop recording' : 'Record voice'}</Button> : null}
+                  {mediaFile && mediaPreviewUrl ? <div className="w-full rounded-xl bg-slate-50 p-2 text-xs text-slate-600">
+                    {composeType === 'VIDEO' ? <video controls src={mediaPreviewUrl} className="max-h-48 rounded-lg" /> : null}
+                    {composeType === 'VOICE' ? <audio controls src={mediaPreviewUrl} className="max-w-full" /> : null}
+                    {composeType === 'DOCUMENT' ? <p>Ready to send: {mediaFile.name}</p> : null}
+                    <button type="button" onClick={() => setMediaFile(null)} className="mt-1 font-medium text-rose-700">Remove attachment</button>
+                  </div> : null}
                   {composeType === 'CONTACT' ? <><input aria-label="Contact name" value={contactName} onChange={(event) => setContactName(event.target.value)} placeholder="Contact name" className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm" /><input aria-label="Contact phone" value={contactPhone} onChange={(event) => setContactPhone(event.target.value)} placeholder="Phone number" className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm" /></> : null}
                   {composeType === 'LOCATION' ? <><input aria-label="Location label" value={locationLabel} onChange={(event) => setLocationLabel(event.target.value)} placeholder="Place name" className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm" /><input aria-label="Latitude" type="number" step="any" value={latitude} onChange={(event) => setLatitude(event.target.value)} placeholder="Latitude" className="w-28 rounded-xl border border-slate-200 px-3 py-2 text-sm" /><input aria-label="Longitude" type="number" step="any" value={longitude} onChange={(event) => setLongitude(event.target.value)} placeholder="Longitude" className="w-28 rounded-xl border border-slate-200 px-3 py-2 text-sm" /></> : null}
                 </div>

@@ -112,7 +112,7 @@ const messageToPublicShape = (message: any) => ({
   forwardedFromId: message.forwardedFromId ?? null,
   editedAt: message.editedAt ?? null,
   expiresAt: message.expiresAt ?? null,
-  reactions: message.reactions ?? socialStore.state.messageReactions.filter((reaction) => reaction.messageId === message.id),
+  reactions: message.reactions ?? [],
 });
 
 export const messagesRouter = Router();

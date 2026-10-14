@@ -301,7 +301,7 @@ command2aRouter.post('/calls/:id/reject', requireAuth, async (req, res) => {
   const allTargetsRejected = call.participants.filter((participant) => participant.userId !== call.callerId)
     .every((participant) => participant.userId === req.user!.id || participant.status === 'left');
   const next = updateCallSession(call.id, allTargetsRejected ? { status: 'rejected' } : {}, [{ userId: req.user!.id, status: 'left' }]);
-  return res.json({ call: next, message: allOthersLeft ? 'Call rejected.' : 'Call declined.' });
+  return res.json({ call: next, message: allTargetsRejected ? 'Call rejected.' : 'Call declined.' });
 });
 
 command2aRouter.post('/calls/:id/cancel', requireAuth, async (req, res) => {
@@ -335,8 +335,8 @@ command2aRouter.post('/calls/:id/leave', requireAuth, async (req, res) => {
   if (!call) return res.status(404).json({ message: 'Call not found.' });
   if (!isCallParticipant(call, req.user!.id)) return res.status(403).json({ message: 'You do not have access to this call.' });
   const allTargetsRejected = call.participants.every((participant) => participant.userId === req.user!.id || participant.status === 'left');
-  const next = updateCallSession(call.id, allOthersLeft ? { status: 'ended' } : {}, [{ userId: req.user!.id, status: 'left' }]);
-  return res.json({ call: next, message: allOthersLeft ? 'Call ended.' : 'You left the call.' });
+  const next = updateCallSession(call.id, allTargetsRejected ? { status: 'ended' } : {}, [{ userId: req.user!.id, status: 'left' }]);
+  return res.json({ call: next, message: allTargetsRejected ? 'Call ended.' : 'You left the call.' });
 });
 
 command2aRouter.post('/calls/:id/mute', requireAuth, async (req, res) => {

@@ -21,7 +21,7 @@ export type AuthResponse = {
 
 export type RegisterInput = {
   name: string
-  username: string
+  username?: string
   phone?: string
   email?: string
   password: string

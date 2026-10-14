@@ -71,6 +71,31 @@ describe('product area gaps', () => {
     expect((await request(app).delete(`/api/conversations/${channelId}/participants/${guest.user.id}`).set('Cookie', moderator.auth)).status).toBe(200);
   });
 
+  it('lets group owners and moderators add new members but prevents direct-chat expansion', async () => {
+    const owner = await register('AddGroupOwner');
+    const moderator = await register('AddGroupModerator');
+    const guest = await register('AddGroupGuest');
+    const outsider = await register('AddGroupOutsider');
+    const created = await request(app).post('/api/conversations').set('Cookie', owner.auth).send({
+      participantIds: [moderator.user.id],
+      name: 'Small group',
+    });
+    const groupId = created.body.conversation.id;
+
+    expect((await request(app).get('/api/conversations').set('Cookie', owner.auth)).body.conversations.find((entry: { id: string }) => entry.id === groupId).isGroup).toBe(true);
+    expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', outsider.auth).send({ participantIds: [guest.user.id] })).status).toBe(404);
+    expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', owner.auth).send({ participantIds: [guest.user.id, guest.user.id] })).status).toBe(400);
+    expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', owner.auth).send({ participantIds: [guest.user.id] })).body.added).toEqual([guest.user.id]);
+    expect((await request(app).get('/api/conversations').set('Cookie', guest.auth)).body.conversations.some((entry: { id: string }) => entry.id === groupId)).toBe(true);
+
+    const promoted = await request(app).patch(`/api/conversations/${groupId}/participants/${moderator.user.id}`).set('Cookie', owner.auth).send({ role: 'MODERATOR' });
+    expect(promoted.status).toBe(200);
+    expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', moderator.auth).send({ participantIds: [outsider.user.id] })).body.added).toEqual([outsider.user.id]);
+
+    const direct = await request(app).post('/api/conversations').set('Cookie', owner.auth).send({ participantId: outsider.user.id });
+    expect((await request(app).post(`/api/conversations/${direct.body.conversation.id}/participants`).set('Cookie', owner.auth).send({ participantIds: [guest.user.id] })).status).toBe(400);
+  });
+
   it('supports private community channels through invitation-only membership', async () => {
     const owner = await register('PrivateSpaceOwner');
     const member = await register('PrivateSpaceMember');
@@ -85,22 +110,35 @@ describe('product area gaps', () => {
     expect((await request(app).delete(`/api/communities/${created.body.community.id}/members/${member.user.id}`).set('Cookie', owner.auth)).status).toBe(200);
   });
 
-  it('refuses to create a group call when no real media/signaling service exists', async () => {
+  it('creates an authenticated WebRTC call and restricts its signaling to call participants', async () => {
     const caller = await register('CallCaller');
     const one = await register('CallOne');
-    const two = await register('CallTwo');
-    const started = await request(app).post('/api/calls/start').set('Cookie', caller.auth).send({ targetUserIds: [one.user.id, two.user.id], type: 'video' });
-    expect(started.status).toBe(503);
-    expect(started.body.message).toMatch(/media and signaling/i);
-    expect((await request(app).get('/api/calls/history').set('Cookie', caller.auth)).body.calls).toHaveLength(0);
+    const outsider = await register('CallOutsider');
+    const started = await request(app).post('/api/calls/start').set('Cookie', caller.auth).send({ targetUserId: one.user.id, type: 'video' });
+    expect(started.status).toBe(201);
+    expect(started.body.call.providerConfigured).toBe(true);
+    expect(started.body.call.status).toBe('ringing');
+    expect(started.body.call.participants.map((participant: { userId: string }) => participant.userId)).toContain(one.user.id);
+    const signal = { type: 'offer', sdp: 'v=0\\r\\n' };
+    expect((await request(app).post(`/api/calls/${started.body.call.id}/signaling`).set('Cookie', outsider.auth).send({ to: one.user.id, signal })).status).toBe(403);
+    expect((await request(app).post(`/api/calls/${started.body.call.id}/signaling`).set('Cookie', caller.auth).send({ to: one.user.id, signal })).status).toBe(202);
+    const accepted = await request(app).post(`/api/calls/${started.body.call.id}/accept`).set('Cookie', one.auth);
+    expect(accepted.body.call.status).toBe('ringing');
+    expect((await request(app).post(`/api/calls/${started.body.call.id}/connected`).set('Cookie', one.auth)).body.call.status).toBe('ringing');
+    expect((await request(app).post(`/api/calls/${started.body.call.id}/connected`).set('Cookie', caller.auth)).body.call.status).toBe('connected');
   });
 
-  it('does not create a live session or viewers without real media service', async () => {
+  it('creates real browser-to-browser live sessions and authorizes viewer signaling', async () => {
     const host = await register('LiveHost');
     const viewer = await register('LiveGuest');
     const created = await request(app).post('/api/live/create').set('Cookie', host.auth).send({ title: 'Community stream' });
-    expect(created.status).toBe(503);
-    expect(created.body.message).toMatch(/real-time media/i);
-    expect((await request(app).get('/api/live').set('Cookie', viewer.auth)).body.lives).toHaveLength(0);
+    expect(created.status).toBe(201);
+    expect(created.body.live.providerConfigured).toBe(true);
+    expect((await request(app).post(`/api/live/${created.body.live.id}/start`).set('Cookie', host.auth)).status).toBe(200);
+    const joined = await request(app).post(`/api/live/${created.body.live.id}/viewers/join`).set('Cookie', viewer.auth);
+    expect(joined.status).toBe(201);
+    expect((await request(app).post(`/api/live/${created.body.live.id}/signaling`).set('Cookie', viewer.auth).send({ to: host.user.id, signal: { type: 'join' } })).status).toBe(202);
+    expect((await request(app).post(`/api/live/${created.body.live.id}/signaling`).set('Cookie', viewer.auth).send({ to: host.user.id, signal: { type: 'offer', sdp: 'v=0\\r\\n' } })).status).toBe(403);
+    expect((await request(app).post(`/api/live/${created.body.live.id}/signaling`).set('Cookie', host.auth).send({ to: viewer.user.id, signal: { type: 'offer', sdp: 'v=0\\r\\n' } })).status).toBe(202);
   });
 });

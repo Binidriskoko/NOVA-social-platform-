@@ -28,7 +28,7 @@ export type CallStatus = 'ringing' | 'outgoing' | 'connected' | 'ended' | 'misse
 
 export type CallParticipantState = {
   userId: string;
-  status: 'pending' | 'connected' | 'left';
+  status: 'pending' | 'accepted' | 'connected' | 'left';
   muted: boolean;
   cameraOn: boolean;
   speakerOn: boolean;
@@ -41,7 +41,7 @@ export type CallSession = {
   type: CallType;
   status: CallStatus;
   participants: CallParticipantState[];
-  provider: 'local-dev';
+  provider: 'webrtc-peer';
   providerConfigured: boolean;
   createdAt: string;
   updatedAt: string;
@@ -95,7 +95,7 @@ export type LiveSession = {
   recordingUrl?: string | null;
   recordingStatus: 'UNAVAILABLE' | 'RECORDING' | 'READY';
   analyticsHook: string | null;
-  provider: 'local-dev';
+  provider: 'webrtc-peer';
   providerConfigured: boolean;
   createdAt: string;
   updatedAt: string;
@@ -346,6 +346,28 @@ export function listCallHistory(userId: string) {
   return getStore().callSessions.filter((call) => call.participants.some((participant) => participant.userId === userId) && call.status !== 'cancelled');
 }
 
+export function createCallSession(callerId: string, targetUserIds: string[], type: CallType) {
+  const now = new Date().toISOString();
+  const call: CallSession = {
+    id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+    callerId,
+    targetUserId: targetUserIds.length === 1 ? targetUserIds[0] : null,
+    type,
+    status: 'ringing',
+    participants: [
+      { userId: callerId, status: 'pending', muted: false, cameraOn: type === 'video', speakerOn: true },
+      ...targetUserIds.map((userId) => ({ userId, status: 'pending' as const, muted: false, cameraOn: type === 'video', speakerOn: true })),
+    ],
+    provider: 'webrtc-peer',
+    providerConfigured: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+  getStore().callSessions.unshift(call);
+  realtimeHub.emit('call:update', { call, allowedUserIds: call.participants.map((participant) => participant.userId) });
+  return call;
+}
+
 export function getCallSession(callId: string) {
   return getStore().callSessions.find((call) => call.id === callId) ?? null;
 }
@@ -384,6 +406,35 @@ export function getLiveSession(liveId: string) {
 
 export function listLiveSessions() {
   return [...getStore().liveSessions].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+}
+
+export function createLiveSession(hostId: string, input: { title: string; description?: string; visibility: LiveVisibility }) {
+  const now = new Date().toISOString();
+  const live: LiveSession = {
+    id: `live_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+    hostId,
+    title: input.title,
+    description: input.description ?? null,
+    visibility: input.visibility,
+    status: 'paused',
+    viewerCount: 0,
+    moderators: [],
+    viewers: [],
+    guests: [],
+    comments: [],
+    reactions: [],
+    replayUrl: null,
+    recordingUrl: null,
+    recordingStatus: 'UNAVAILABLE',
+    analyticsHook: null,
+    provider: 'webrtc-peer',
+    providerConfigured: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+  getStore().liveSessions.unshift(live);
+  realtimeHub.emit('live:update', { live, allowedUserIds: [hostId] });
+  return live;
 }
 
 export function updateLiveSession(liveId: string, updater: (session: LiveSession) => LiveSession) {

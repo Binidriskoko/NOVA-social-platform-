@@ -15,6 +15,12 @@ type CommentRecord = {
   author: { id: string; name: string; avatar?: string }
 }
 
+type ShareConversation = {
+  id: string
+  name: string | null
+  participants: { userId: string; user?: { name: string } }[]
+}
+
 type PostCardProps = {
   post: Post
   onDeleted?: (postId: string) => void
@@ -39,6 +45,10 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
   const [saved, setSaved] = useState(post.savedByCurrentUser ?? false)
   const [saveCount, setSaveCount] = useState(post.saved)
   const [shareCount, setShareCount] = useState(post.shares)
+  const [shareOpen, setShareOpen] = useState(false)
+  const [shareLoading, setShareLoading] = useState(false)
+  const [shareBusy, setShareBusy] = useState(false)
+  const [shareConversations, setShareConversations] = useState<ShareConversation[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -130,21 +140,96 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
     await publishComment(replyDraft, parentId)
   }
 
-  const sharePost = async () => {
-    const url = `${window.location.origin}/#post-${encodeURIComponent(post.id)}`
+  const postUrl = `${window.location.origin}/#post-${encodeURIComponent(post.id)}`
+
+  const recordPostShare = async () => {
+    const response = await apiRequest<{ shares: number }>(`/api/posts/${encodeURIComponent(post.id)}/share`, { method: 'POST' })
+    setShareCount(response.shares)
+  }
+
+  const openShareOptions = async () => {
+    if (shareOpen) {
+      setShareOpen(false)
+      return
+    }
+    setShareOpen(true)
+    if (shareConversations.length) return
+    setShareLoading(true)
     setError('')
     try {
-      if (navigator.share) await navigator.share({ title: `Post by ${post.author.name}`, text: post.content, url })
-      else {
-        await navigator.clipboard.writeText(url)
-        setNotice('Post link copied.')
+      const response = await apiRequest<{ conversations: ShareConversation[] }>('/api/conversations')
+      setShareConversations(response.conversations)
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Unable to load your conversations.')
+    } finally {
+      setShareLoading(false)
+    }
+  }
+
+  const copyPostLink = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(postUrl)
+      } else {
+        const input = document.createElement('textarea')
+        input.value = postUrl
+        input.setAttribute('readonly', '')
+        input.style.position = 'fixed'
+        input.style.opacity = '0'
+        document.body.append(input)
+        input.select()
+        const copied = document.execCommand('copy')
+        input.remove()
+        if (!copied) throw new Error('Clipboard access is unavailable in this browser.')
       }
-      const response = await apiRequest<{ shares: number }>(`/api/posts/${post.id}/share`, { method: 'POST' })
-      setShareCount(response.shares)
+      await recordPostShare()
+      setNotice('Post link copied.')
+      setShareOpen(false)
+    } catch (copyError) {
+      setError(copyError instanceof Error ? copyError.message : 'Unable to copy this post link.')
+    }
+  }
+
+  const shareFromDevice = async () => {
+    setShareBusy(true)
+    setError('')
+    try {
+      if (!navigator.share) {
+        await copyPostLink()
+        return
+      }
+      try {
+        await navigator.share({ title: `Post by ${post.author.name}`, text: post.content, url: postUrl })
+      } catch (shareError) {
+        if (shareError instanceof Error && shareError.name === 'AbortError') return
+        await copyPostLink()
+        return
+      }
+      await recordPostShare()
+      setNotice('Post shared.')
+      setShareOpen(false)
     } catch (shareError) {
-      if (shareError instanceof Error && shareError.name !== 'AbortError') {
-        setError(shareError.message || 'Unable to share this post from this browser.')
-      }
+      setError(shareError instanceof Error ? shareError.message : 'Unable to share this post.')
+    } finally {
+      setShareBusy(false)
+    }
+  }
+
+  const shareToConversation = async (conversationId: string) => {
+    setShareBusy(true)
+    setError('')
+    try {
+      await apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ text: `Check out this post by ${post.author.name}: ${postUrl}` }),
+      })
+      await recordPostShare()
+      setNotice('Post shared in your conversation.')
+      setShareOpen(false)
+    } catch (shareError) {
+      setError(shareError instanceof Error ? shareError.message : 'Unable to share this post in that conversation.')
+    } finally {
+      setShareBusy(false)
     }
   }
 
@@ -246,7 +331,7 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
         </Link>
         <div className="flex items-center gap-1">
           {!isOwnPost ? <button type="button" onClick={() => void toggleFollowAuthor()} disabled={busy} aria-label={authorFollowing ? `Unfollow ${post.author.name}` : `Follow ${post.author.name}`} className="rounded-xl px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">{authorFollowing ? 'Following' : 'Follow'}</button> : null}
-          <button type="button" onClick={() => void sharePost()} aria-label="Share post" title="Share post" className="rounded-full p-2 text-slate-500 hover:bg-slate-100">
+          <button type="button" onClick={() => void openShareOptions()} aria-label="Share post" title="Share post" className="rounded-full p-2 text-slate-500 hover:bg-slate-100">
             <Share2 className="h-4 w-4" aria-hidden="true" />
           </button>
           <button type="button" onClick={() => void (isOwnPost ? deletePost() : reportPost())} aria-label={isOwnPost ? 'Delete post' : 'Report post'} title={isOwnPost ? 'Delete post' : 'Report post'} className="rounded-full p-2 text-slate-500 hover:bg-slate-100">
@@ -297,6 +382,20 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
 
       {notice ? <p className="mt-2 text-sm text-emerald-700" role="status">{notice}</p> : null}
       {error ? <p className="mt-2 text-sm text-rose-700" role="alert">{error}</p> : null}
+      {shareOpen ? <section aria-label="Share post options" className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" onClick={() => void shareFromDevice()} disabled={shareBusy}>{shareBusy ? 'Sharing…' : 'Share from device'}</Button>
+          <Button variant="secondary" size="sm" onClick={() => void copyPostLink()} disabled={shareBusy}>Copy link</Button>
+        </div>
+        <h3 className="mt-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Send through NOVAKOKO</h3>
+        {shareLoading ? <p className="mt-2 text-sm text-slate-500">Loading conversations…</p> : shareConversations.length ? <ul className="mt-1 max-h-40 divide-y divide-slate-200 overflow-y-auto">{shareConversations.map((conversation) => {
+          const peer = conversation.participants.find((participant) => participant.userId !== user?.id)?.user?.name
+          return <li key={conversation.id} className="flex items-center gap-2 py-2">
+            <span className="min-w-0 flex-1 truncate text-sm text-slate-800">{conversation.name ?? peer ?? 'Group conversation'}</span>
+            <Button variant="ghost" size="sm" onClick={() => void shareToConversation(conversation.id)} disabled={shareBusy}>Send</Button>
+          </li>
+        })}</ul> : <p className="mt-2 text-sm text-slate-500">Start a conversation to share this post with NOVAKOKO messaging.</p>}
+      </section> : null}
 
       {commentsOpen ? (
         <section className="mt-4 border-t border-slate-100 pt-4" aria-label="Post comments">

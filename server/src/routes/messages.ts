@@ -14,6 +14,7 @@ const createConversationSchema = z.object({
   participantIds: z.array(z.string().min(1)).min(1).max(49).optional(),
   name: z.string().trim().max(120).optional(),
   isChannel: z.boolean().optional(),
+  isGroup: z.boolean().optional(),
 }).refine((payload) => Boolean(payload.participantId) !== Boolean(payload.participantIds), {
   message: 'Provide either participantId or participantIds.',
 }).refine((payload) => !payload.participantIds || new Set(payload.participantIds).size === payload.participantIds.length, {
@@ -49,7 +50,11 @@ const conversationPreferenceSchema = z.object({
   mutedUntil: z.string().datetime().nullable().optional(),
   disappearingAfterSeconds: z.number().int().min(0).max(90 * 24 * 60 * 60).optional(),
 });
-const addParticipantSchema = z.object({ participantIds: z.array(z.string().min(1)).min(1).max(49) });
+const addParticipantSchema = z.object({
+  participantIds: z.array(z.string().min(1)).min(1).max(49),
+}).refine((payload) => new Set(payload.participantIds).size === payload.participantIds.length, {
+  message: 'Group participants must be unique.',
+});
 const roleSchema = z.object({ role: z.enum(['MEMBER', 'MODERATOR']) });
 const reportSchema = z.object({
   category: z.enum(['SPAM', 'HARASSMENT', 'SEXUAL_CONTENT', 'HATE', 'VIOLENCE', 'SCAM', 'OTHER']),
@@ -167,6 +172,7 @@ messagesRouter.post('/conversations', requireAuth, async (req, res) => {
         name: payload.name ?? null,
         ownerId: userId,
         isChannel: payload.isChannel ?? false,
+        isGroup: payload.isGroup ?? (Boolean(payload.participantIds) || Boolean(payload.isChannel)),
         participants: {
           create: conversationParticipantIds.map((participantId, index) => ({
             userId: participantId,
@@ -180,6 +186,8 @@ messagesRouter.post('/conversations', requireAuth, async (req, res) => {
     return res.status(201).json({ conversation: {
       id: conversation.id,
       name: conversation.name,
+      isGroup: conversation.isGroup,
+      isChannel: conversation.isChannel,
       updatedAt: conversation.updatedAt,
       lastMessageAt: conversation.lastMessageAt,
       lastMessagePreview: conversation.lastMessagePreview,
@@ -211,6 +219,7 @@ messagesRouter.post('/conversations', requireAuth, async (req, res) => {
     id: `conversation_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     name: payload.name ?? null,
     isChannel: payload.isChannel ?? false,
+    isGroup: payload.isGroup ?? (Boolean(payload.participantIds) || Boolean(payload.isChannel)),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     lastMessageAt: null,
@@ -888,30 +897,37 @@ messagesRouter.patch('/conversations/:id/preferences', requireAuth, async (req, 
 
 messagesRouter.post('/conversations/:id/participants', requireAuth, async (req, res) => {
   const conversationId = String(req.params.id);
-  const { participantIds } = addParticipantSchema.parse(req.body ?? {});
+  const validation = addParticipantSchema.safeParse(req.body ?? {});
+if (!validation.success) {
+return res.status(400).json({ message: validation.error.issues[0]?.message ?? "Invalid participants." });
+}
+const { participantIds } = validation.data;
   const userId = req.user!.id;
   const dbAvailable = await isDatabaseAvailable();
   if (dbAvailable) {
     const actor = await prisma.conversationParticipant.findUnique({ where: { conversationId_userId: { conversationId, userId } }, select: { role: true } });
-    const conversation = await prisma.conversation.findUnique({ where: { id: conversationId }, select: { id: true, ownerId: true } });
+    const conversation = await prisma.conversation.findUnique({ where: { id: conversationId }, select: { id: true, isGroup: true, isChannel: true } });
     if (!actor || !conversation) return res.status(404).json({ message: 'Conversation not found.' });
-    if (conversation.ownerId !== userId && actor.role !== 'MODERATOR') return res.status(403).json({ message: 'Only group admins can add participants.' });
+    if (!conversation.isGroup && !conversation.isChannel) return res.status(400).json({ message: 'Members can only be added to group conversations.' });
+    if (actor.role !== 'OWNER' && actor.role !== 'MODERATOR') return res.status(403).json({ message: 'Only group admins can add participants.' });
     const found = await prisma.user.findMany({ where: { id: { in: participantIds } }, select: { id: true } });
     if (found.length !== participantIds.length) return res.status(404).json({ message: 'User not found.' });
-    for (const targetId of participantIds) if (await isBlocked(userId, targetId)) return res.status(403).json({ message: 'You cannot add a blocked user.' });
-    await prisma.conversationParticipant.createMany({ data: participantIds.map((targetId) => ({ conversationId, userId: targetId, role: 'MEMBER' })), skipDuplicates: true });
-    return res.status(201).json({ added: participantIds });
+    const currentParticipants = await prisma.conversationParticipant.findMany({ where: { conversationId, userId: { in: participantIds } }, select: { userId: true } });
+    const newParticipantIds = participantIds.filter((targetId) => !currentParticipants.some((participant) => participant.userId === targetId));
+    for (const targetId of newParticipantIds) if (await isBlocked(userId, targetId)) return res.status(403).json({ message: 'You cannot add a blocked user.' });
+    await prisma.conversationParticipant.createMany({ data: newParticipantIds.map((targetId) => ({ conversationId, userId: targetId, role: 'MEMBER' })), skipDuplicates: true });
+    return res.status(201).json({ added: newParticipantIds });
   }
   const actor = socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === userId);
   const conversation = socialStore.state.conversations.find((entry) => entry.id === conversationId);
   if (!actor || !conversation) return res.status(404).json({ message: 'Conversation not found.' });
+  if (!conversation.isGroup && !conversation.isChannel) return res.status(400).json({ message: 'Members can only be added to group conversations.' });
   if (actor.role !== 'OWNER' && actor.role !== 'MODERATOR') return res.status(403).json({ message: 'Only group admins can add participants.' });
-  for (const targetId of participantIds) {
-    if (!findUserById(targetId)) return res.status(404).json({ message: 'User not found.' });
-    if (await isBlocked(userId, targetId)) return res.status(403).json({ message: 'You cannot add a blocked user.' });
-    if (!socialStore.state.conversationParticipants.some((entry) => entry.conversationId === conversationId && entry.userId === targetId)) socialStore.state.conversationParticipants.push({ id: `participant_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, conversationId, userId: targetId, role: 'MEMBER', joinedAt: new Date().toISOString(), lastReadAt: null, leftAt: null });
-  }
-  return res.status(201).json({ added: participantIds });
+  for (const targetId of participantIds) if (!findUserById(targetId)) return res.status(404).json({ message: 'User not found.' });
+  const newParticipantIds = participantIds.filter((targetId) => !socialStore.state.conversationParticipants.some((entry) => entry.conversationId === conversationId && entry.userId === targetId));
+  for (const targetId of newParticipantIds) if (await isBlocked(userId, targetId)) return res.status(403).json({ message: 'You cannot add a blocked user.' });
+  for (const targetId of newParticipantIds) socialStore.state.conversationParticipants.push({ id: `participant_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, conversationId, userId: targetId, role: 'MEMBER', joinedAt: new Date().toISOString(), lastReadAt: null, leftAt: null });
+  return res.status(201).json({ added: newParticipantIds });
 });
 
 messagesRouter.patch('/conversations/:id/participants/:userId', requireAuth, async (req, res) => {

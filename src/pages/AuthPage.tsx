@@ -46,10 +46,14 @@ export function AuthPage({ mode }: AuthPageProps) {
     const email = formData.email.trim()
     const phone = formData.phone.trim()
     const password = formData.password
+    const hasAccountIdentifier = Boolean(username || email || phone)
 
     if (isRegister && name.length < 2) nextFieldErrors.name = 'Please enter your name.'
-    if (isRegister && !/^[a-zA-Z0-9_]{3,30}$/.test(username)) {
+    if (isRegister && username && !/^[a-zA-Z0-9_]{3,30}$/.test(username)) {
       nextFieldErrors.username = 'Use 3-30 letters, numbers, or underscores.'
+    }
+    if (isRegister && !hasAccountIdentifier) {
+      nextFieldErrors.username = 'Choose a username, email address, or phone number for your account.'
     }
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       nextFieldErrors.email = 'Please enter a valid email address.'
@@ -75,7 +79,7 @@ export function AuthPage({ mode }: AuthPageProps) {
       if (isRegister) {
         await register({
           name,
-          username,
+          username: username || undefined,
           phone: phone || undefined,
           email: email || undefined,
           password,

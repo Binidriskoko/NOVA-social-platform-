@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
-import { Archive, ArrowLeft, Image, Megaphone, MessageCircleMore, Mic, Phone, Pin, Search, SendHorizontal, Square, Star, UsersRound, VolumeX } from 'lucide-react'
+import { Archive, ArrowLeft, Image, Megaphone, MessageCircleMore, Mic, Phone, Pin, Search, SendHorizontal, Square, Star, UsersRound, UserPlus, VolumeX } from 'lucide-react'
 import { Avatar } from '../components/ui/Avatar'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -12,6 +12,8 @@ type ConversationParticipant = { userId: string; role?: string; user?: { id: str
 type ConversationListItem = {
   id: string
   name: string | null
+  isGroup?: boolean
+  isChannel?: boolean
   participants: ConversationParticipant[]
   lastMessagePreview: string | null
   updatedAt: string
@@ -101,6 +103,8 @@ export function MessagesPage() {
   const [messageSearch, setMessageSearch] = useState('')
   const [searchResults, setSearchResults] = useState<MessageItem[] | null>(null)
   const [showNew, setShowNew] = useState(false)
+  const [showAddMembers, setShowAddMembers] = useState(false)
+  const [selectedAddParticipants, setSelectedAddParticipants] = useState<string[]>([])
   const [isGroup, setIsGroup] = useState(false)
   const [groupName, setGroupName] = useState('')
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([])
@@ -253,6 +257,21 @@ export function MessagesPage() {
 
   const activeConversation = useMemo(() => conversations.find((conversation) => conversation.id === selectedId) ?? null, [conversations, selectedId])
   const activePeer = useMemo(() => activeConversation?.participants.find((participant) => participant.userId !== user?.id)?.user ?? null, [activeConversation, user])
+  const addGroupMembers = async () => {
+    if (!activeConversation || !selectedAddParticipants.length) return
+    try {
+      setError('')
+      await apiRequest(`/api/conversations/${encodeURIComponent(activeConversation.id)}/participants`, {
+        method: 'POST',
+        body: JSON.stringify({ participantIds: selectedAddParticipants }),
+      })
+      setShowAddMembers(false)
+      setSelectedAddParticipants([])
+      await loadConversations()
+    } catch (addError) {
+      setError(addError instanceof Error ? addError.message : 'Unable to add members to this group.')
+    }
+  }
   const visibleConversations = useMemo(() => conversations
     .filter((conversation) => showArchived || !conversation.archivedAt)
     .filter((conversation) => conversationFilter === 'all'
@@ -592,6 +611,7 @@ export function MessagesPage() {
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto">
+                  {activeConversation.isGroup && activeConversation.participants.some((participant) => participant.userId === user?.id && ['OWNER', 'MODERATOR'].includes(participant.role ?? '')) ? <button type="button" title="Add group members" aria-label="Add group members" onClick={() => { setShowAddMembers((open) => !open); setSelectedAddParticipants([]); if (!directory.length) void loadDirectory() }} className="rounded-full p-1.5 text-indigo-700 hover:bg-indigo-50"><UserPlus className="h-4 w-4" aria-hidden="true" /></button> : null}
                   <Link to="/calls" title="Open voice and video calls" aria-label="Open calls" className="rounded-full p-1.5 text-blue-700 hover:bg-blue-50"><Phone className="h-4 w-4" aria-hidden="true" /></Link>
                   <button type="button" title="Pin conversation" aria-label="Pin conversation" onClick={() => void updatePreference('pinned')} className={`rounded-full p-1.5 ${activeConversation.pinnedAt ? 'text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}><Pin className="h-4 w-4" /></button>
                   <button type="button" title="Star conversation" aria-label="Star conversation" onClick={() => void updatePreference('starred')} className={`rounded-full p-1.5 ${activeConversation.starredAt ? 'text-amber-600' : 'text-slate-500 hover:bg-slate-100'}`}><Star className="h-4 w-4" /></button>
@@ -600,6 +620,22 @@ export function MessagesPage() {
                   <button type="button" title="Shared media" aria-label="Shared media" onClick={() => void toggleMedia()} className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><Image className="h-4 w-4" /></button>
                 </div>
               </header>
+
+              {showAddMembers && activeConversation.isGroup ? <section aria-label="Add group members" className="mt-2 rounded-xl border border-indigo-100 bg-white p-3">
+                <h3 className="text-sm font-semibold text-slate-900">Add members</h3>
+                {directoryError ? <p role="alert" className="mt-2 text-xs text-rose-700">{directoryError}</p> : null}
+                <div className="mt-2 max-h-36 space-y-1 overflow-y-auto">
+                  {directory.filter((person) => !activeConversation.participants.some((participant) => participant.userId === person.id)).map((person) => <label key={person.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 hover:bg-slate-50">
+                    <input type="checkbox" checked={selectedAddParticipants.includes(person.id)} onChange={(event) => setSelectedAddParticipants((current) => event.target.checked ? [...current, person.id] : current.filter((id) => id !== person.id))} />
+                    <span className="text-sm text-slate-800">{person.name}</span>
+                  </label>)}
+                  {directory.filter((person) => !activeConversation.participants.some((participant) => participant.userId === person.id)).length === 0 ? <p className="py-2 text-xs text-slate-500">Everyone is already in this group.</p> : null}
+                </div>
+                <div className="mt-2 flex justify-end gap-2">
+                  <Button variant="ghost" size="sm" onClick={() => setShowAddMembers(false)}>Cancel</Button>
+                  <Button variant="primary" size="sm" disabled={!selectedAddParticipants.length} onClick={() => void addGroupMembers()}>Add selected</Button>
+                </div>
+              </section> : null}
 
               {showMedia ? <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-slate-50 p-3 sm:grid-cols-3">{media.length ? media.map((item) => item.mediaUrl ? <a key={item.id} href={resolveMediaUrl(item.mediaUrl)} target="_blank" rel="noreferrer" className="min-w-0 overflow-hidden rounded-lg bg-white text-xs text-indigo-700">{item.contentType === 'IMAGE' ? <img src={resolveMediaUrl(item.mediaUrl)} crossOrigin={item.mediaUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} alt="Shared image" className="aspect-square w-full object-cover" /> : <span className="block truncate p-2">{item.contentType}: {item.mediaUrl}</span>}</a> : null) : <p className="text-xs text-slate-500">No shared media.</p>}</div> : null}
               <form onSubmit={(event) => void searchMessages(event)} className="mt-2 flex gap-2 px-1">

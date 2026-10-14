@@ -333,6 +333,7 @@ model Conversation {
   id                       String    @id @default(cuid())
   name                     String?
   isChannel                Boolean   @default(false)
+  isGroup                  Boolean   @default(false)
   disappearingAfterSeconds Int       @default(0)
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt

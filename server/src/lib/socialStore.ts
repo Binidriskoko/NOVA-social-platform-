@@ -118,6 +118,7 @@ export type ConversationRecord = {
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
   isChannel?: boolean;
+  isGroup?: boolean;
   disappearingAfterSeconds?: number;
 };
 

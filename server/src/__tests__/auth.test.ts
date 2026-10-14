@@ -55,6 +55,46 @@ describe('auth routes', () => {
     expect(login.body.user.id).toBe(registration.body.user.id);
   });
 
+  it('registers and logs in with only an email or phone number and a password', async () => {
+    const emailOnly = await request(app)
+      .post('/api/auth/register')
+      .send({
+        name: 'Email Only User',
+        email: 'email_only@example.com',
+        password: 'Password123',
+        communityRulesAccepted: true,
+      });
+
+    expect(emailOnly.status).toBe(201);
+    expect(emailOnly.body.user.email).toBe('email_only@example.com');
+
+    const emailLogin = await request(app)
+      .post('/api/auth/login')
+      .send({ identifier: 'email_only@example.com', password: 'Password123' });
+
+    expect(emailLogin.status).toBe(200);
+    expect(emailLogin.body.user.id).toBe(emailOnly.body.user.id);
+
+    const phoneOnly = await request(app)
+      .post('/api/auth/register')
+      .send({
+        name: 'Phone Only User',
+        phone: '+2348031234567',
+        password: 'Password123',
+        communityRulesAccepted: true,
+      });
+
+    expect(phoneOnly.status).toBe(201);
+    expect(phoneOnly.body.user.phoneE164).toBe('+2348031234567');
+
+    const phoneLogin = await request(app)
+      .post('/api/auth/login')
+      .send({ identifier: '+2348031234567', password: 'Password123' });
+
+    expect(phoneLogin.status).toBe(200);
+    expect(phoneLogin.body.user.id).toBe(phoneOnly.body.user.id);
+  });
+
   it('supports registration, username login, authenticated session, logout, and password login again by phone', async () => {
     const registration = await request(app)
       .post('/api/auth/register')

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { app } from '../app.js';
 import { fallbackStore } from '../lib/fallbackStore.js';
+import { clearCommand2AStores } from '../lib/platform.js';
 import { socialStore } from '../lib/socialStore.js';
 
 function getCookieHeader(response: { headers: Record<string, string | string[] | undefined> }) {
@@ -13,6 +14,7 @@ describe('command 2a foundation', () => {
   beforeEach(() => {
     fallbackStore.clear();
     socialStore.clear();
+    clearCommand2AStores();
   });
 
   it('creates and reads notification state and unread counts', async () => {
@@ -171,8 +173,8 @@ describe('command 2a foundation', () => {
       .set('Cookie', getCookieHeader(aliceLogin))
       .send({ targetUserId: bobUser.id, type: 'voice' });
 
-    expect(started.status).toBe(503);
-    expect(started.body.message).toMatch(/media and signaling/i);
+    expect(started.status).toBe(201);
+    expect(started.body.call.provider).toBe('webrtc-peer');
 
     await request(app)
       .post(`/api/users/${bobUser.id}/block`)
@@ -183,11 +185,11 @@ describe('command 2a foundation', () => {
       .set('Cookie', getCookieHeader(aliceLogin))
       .send({ targetUserId: bobUser.id, type: 'video' });
 
-    expect(blocked.status).toBe(503);
-    expect((await request(app).get('/api/calls/history').set('Cookie', getCookieHeader(aliceLogin))).body.calls).toHaveLength(0);
+    expect(blocked.status).toBe(403);
+    expect((await request(app).get('/api/calls/history').set('Cookie', getCookieHeader(aliceLogin))).body.calls).toHaveLength(1);
   });
 
-  it('does not create a live session without a real-time media service', async () => {
+  it('creates a live session with genuine peer-to-peer media configured', async () => {
     await request(app).post('/api/auth/register').send({
       name: 'Alice',
       email: 'alice@example.com',
@@ -210,9 +212,9 @@ describe('command 2a foundation', () => {
       .set('Cookie', getCookieHeader(aliceLogin))
       .send({ title: 'Launch stream', visibility: 'public' });
 
-    expect(live.status).toBe(503);
-    expect(live.body.message).toMatch(/real-time media/i);
-    expect((await request(app).get('/api/live').set('Cookie', getCookieHeader(aliceLogin))).body.lives).toHaveLength(0);
+    expect(live.status).toBe(201);
+    expect(live.body.live.provider).toBe('webrtc-peer');
+    expect((await request(app).get('/api/live').set('Cookie', getCookieHeader(aliceLogin))).body.lives).toHaveLength(1);
   });
 
   it('reports AI assistance unavailable instead of returning fabricated generated content', async () => {

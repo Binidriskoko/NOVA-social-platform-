@@ -30,10 +30,22 @@ const envSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(900000),
   RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(100),
   AUTH_RATE_LIMIT_MAX: z.coerce.number().default(20),
+  TURN_URLS: z.string().default(''),
+  TURN_SHARED_SECRET: z.string().optional(),
+  TURN_USERNAME_PREFIX: z.string().default('nova'),
+  TURN_CREDENTIAL_TTL_SECONDS: z.coerce.number().int().min(300).max(86400).default(3600),
 }).superRefine((data, ctx) => {
   const hasProductionSecret = Boolean(process.env.JWT_SECRET && process.env.JWT_SECRET.length >= 32);
   const hasProductionDatabaseUrl = Boolean(process.env.DATABASE_URL);
   const hasProductionCorsOrigin = Boolean(runtimeEnvironment.CORS_ORIGIN);
+
+  if (Boolean(data.TURN_URLS.trim()) !== Boolean(data.TURN_SHARED_SECRET)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['TURN_SHARED_SECRET'],
+      message: 'TURN_URLS and TURN_SHARED_SECRET must be configured together.',
+    });
+  }
 
   if (data.NODE_ENV === 'production') {
     if (!hasProductionSecret || data.JWT_SECRET === DEVELOPMENT_JWT_SECRET || data.JWT_SECRET.toLowerCase().includes('replace')) {

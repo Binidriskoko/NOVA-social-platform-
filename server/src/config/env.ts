@@ -47,6 +47,13 @@ export const envSchema = z.object({
     });
   }
   if (data.LIVEKIT_URL) {
+    if (data.LIVEKIT_URL.trim() !== data.LIVEKIT_URL || /[\r\n]/.test(data.LIVEKIT_URL)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['LIVEKIT_URL'],
+        message: 'LIVEKIT_URL must be a valid ws:// or wss:// URL without surrounding whitespace or line breaks.',
+      });
+    }
     try {
       const liveKitUrl = new URL(data.LIVEKIT_URL);
       if (!['wss:', 'ws:'].includes(liveKitUrl.protocol) || !liveKitUrl.host || liveKitUrl.username || liveKitUrl.password || liveKitUrl.pathname !== '/' || liveKitUrl.search || liveKitUrl.hash) {

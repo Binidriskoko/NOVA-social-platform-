@@ -13,10 +13,12 @@ describe('LiveKit environment configuration', () => {
     expect(envSchema.safeParse(completeConfig).success).toBe(true);
   });
 
-  it('rejects incomplete credentials, non-WebSocket URLs, embedded credentials, and short secrets', () => {
+  it('rejects incomplete credentials, non-WebSocket URLs, embedded credentials, whitespace, and short secrets', () => {
     expect(envSchema.safeParse({ ...completeConfig, LIVEKIT_API_SECRET: undefined }).success).toBe(false);
     expect(envSchema.safeParse({ ...completeConfig, LIVEKIT_URL: 'https://media.example.test' }).success).toBe(false);
-    expect(envSchema.safeParse({ ...completeConfig, LIVEKIT_URL: 'wss://user:password@media.example.test' }).success).toBe(false);
+    expect(envSchema.safeParse({ ...completeConfig, LIVEKIT_URL: '******media.example.test' }).success).toBe(false);
+    expect(envSchema.safeParse({ ...completeConfig, LIVEKIT_URL: ' wss://media.example.test ' }).success).toBe(false);
+    expect(envSchema.safeParse({ ...completeConfig, LIVEKIT_API_KEY: ' livekit-test-key ' }).success).toBe(false);
     expect(envSchema.safeParse({ ...completeConfig, LIVEKIT_API_SECRET: 'too-short' }).success).toBe(false);
   });
 });

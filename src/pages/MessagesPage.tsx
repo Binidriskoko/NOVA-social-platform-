@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
-import { Archive, ArrowLeft, Image, Megaphone, MessageCircleMore, Mic, Phone, Pin, Search, SendHorizontal, Square, Star, UsersRound, UserPlus, VolumeX } from 'lucide-react'
+import { Archive, ArrowLeft, CalendarDays, Camera, Check, CheckCheck, CircleDot, FileText, Image, Images, ListChecks, MapPin, MessageCircleMore, Mic, MoreVertical, Paperclip, Phone, Pin, Search, SendHorizontal, Shield, Smile, Square, Star, UsersRound, UserPlus, Video, VolumeX, X } from 'lucide-react'
 import { Avatar } from '../components/ui/Avatar'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -8,7 +8,7 @@ import { useAuth } from '../context/AuthContext'
 import { apiRequest, fetchMediaBlob, resolveMediaUrl, uploadMedia, uploadMessageAttachment } from '../lib/api'
 import { openAuthenticatedEventStream } from '../lib/eventStream'
 
-type ConversationParticipant = { userId: string; role?: string; user?: { id: string; name: string } }
+type ConversationParticipant = { userId: string; role?: string; user?: { id: string; name: string; avatar?: string } }
 type ConversationListItem = {
   id: string
   name: string | null
@@ -18,7 +18,7 @@ type ConversationListItem = {
   lastMessagePreview: string | null
   updatedAt: string
   lastMessageAt: string | null
-  lastMessage?: { id: string; senderId: string; text: string; createdAt: string; readAt?: string | null; status?: string }
+  lastMessage?: { id: string; senderId: string; text: string; createdAt: string; readAt?: string | null; status?: string; contentType?: string }
   pinnedAt?: string | null
   archivedAt?: string | null
   starredAt?: string | null
@@ -98,12 +98,14 @@ export function MessagesPage() {
   const [messagesLoading, setMessagesLoading] = useState(false)
   const [error, setError] = useState('')
   const [sending, setSending] = useState(false)
+  const [sendFailed, setSendFailed] = useState(false)
   const [search, setSearch] = useState('')
-  const [conversationFilter, setConversationFilter] = useState<'all' | 'unread' | 'groups'>('all')
+  const [conversationFilter, setConversationFilter] = useState<'all' | 'unread' | 'favorites' | 'groups'>('all')
   const [messageSearch, setMessageSearch] = useState('')
   const [searchResults, setSearchResults] = useState<MessageItem[] | null>(null)
   const [showNew, setShowNew] = useState(false)
   const [showAddMembers, setShowAddMembers] = useState(false)
+  const [showManageMembers, setShowManageMembers] = useState(false)
   const [selectedAddParticipants, setSelectedAddParticipants] = useState<string[]>([])
   const [isGroup, setIsGroup] = useState(false)
   const [groupName, setGroupName] = useState('')
@@ -133,6 +135,29 @@ export function MessagesPage() {
   const [latitude, setLatitude] = useState('')
   const [longitude, setLongitude] = useState('')
   const [showArchived, setShowArchived] = useState(false)
+  const [showChatMenu, setShowChatMenu] = useState(false)
+  const [showAttachmentSheet, setShowAttachmentSheet] = useState(false)
+  const [pollQuestion, setPollQuestion] = useState('')
+  const [pollOptions, setPollOptions] = useState(['', ''])
+  const [eventTitle, setEventTitle] = useState('')
+  const [eventDate, setEventDate] = useState('')
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  const galleryInputRef = useRef<HTMLInputElement | null>(null)
+  const cameraInputRef = useRef<HTMLInputElement | null>(null)
+  const documentInputRef = useRef<HTMLInputElement | null>(null)
+  const [viewportHeight, setViewportHeight] = useState(() => window.visualViewport?.height ?? window.innerHeight)
+  const initialViewportHeight = useRef(window.visualViewport?.height ?? window.innerHeight)
+  const keyboardOpen = viewportHeight < initialViewportHeight.current - 120
+
+  useEffect(() => {
+    const updateViewportHeight = () => setViewportHeight(window.visualViewport?.height ?? window.innerHeight)
+    window.visualViewport?.addEventListener('resize', updateViewportHeight)
+    window.addEventListener('resize', updateViewportHeight)
+    return () => {
+      window.visualViewport?.removeEventListener('resize', updateViewportHeight)
+      window.removeEventListener('resize', updateViewportHeight)
+    }
+  }, [])
 
   const setMediaFile = (file: File | null) => {
     if (mediaPreviewUrlRef.current) URL.revokeObjectURL(mediaPreviewUrlRef.current)
@@ -156,7 +181,7 @@ export function MessagesPage() {
       setError('')
       const response = await apiRequest<{ conversations: ConversationListItem[] }>('/api/conversations')
       setConversations(response.conversations)
-      setSelectedId((current) => current || response.conversations[0]?.id || '')
+      setSelectedId((current) => current || (window.matchMedia('(min-width: 1024px)').matches ? response.conversations[0]?.id ?? '' : ''))
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Unable to load conversations.')
     } finally {
@@ -272,12 +297,27 @@ export function MessagesPage() {
       setError(addError instanceof Error ? addError.message : 'Unable to add members to this group.')
     }
   }
+  const changeGroupMemberRole = async (participant: ConversationParticipant) => {
+    if (!activeConversation || !participant.userId) return
+    try {
+      setError('')
+      await apiRequest(`/api/conversations/${encodeURIComponent(activeConversation.id)}/participants/${encodeURIComponent(participant.userId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ role: participant.role === 'MODERATOR' ? 'MEMBER' : 'MODERATOR' }),
+      })
+      await loadConversations()
+    } catch (roleError) {
+      setError(roleError instanceof Error ? roleError.message : 'Unable to update this member role.')
+    }
+  }
   const visibleConversations = useMemo(() => conversations
     .filter((conversation) => showArchived || !conversation.archivedAt)
     .filter((conversation) => conversationFilter === 'all'
       || (conversationFilter === 'unread'
         ? (conversation.unreadCount ?? 0) > 0
-        : conversation.participants.length > 2 || Boolean(conversation.name)))
+        : conversationFilter === 'favorites'
+          ? Boolean(conversation.starredAt)
+          : conversation.isGroup || conversation.participants.length > 2 || Boolean(conversation.name)))
     .filter((conversation) => {
       const peer = conversation.participants.find((participant) => participant.userId !== user?.id)?.user
       return `${conversation.name ?? ''} ${peer?.name ?? ''}`.toLowerCase().includes(search.toLowerCase())
@@ -301,9 +341,12 @@ export function MessagesPage() {
   const canSend = composeType === 'TEXT' ? Boolean(draft.trim())
     : ['IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE'].includes(composeType) ? Boolean(mediaUrl.trim() || mediaFile)
       : composeType === 'CONTACT' ? Boolean(contactName.trim() && contactPhone.trim())
-        : Boolean(latitude.trim() && longitude.trim())
+        : composeType === 'LOCATION' ? Boolean(latitude.trim() && longitude.trim())
+          : composeType === 'POLL' ? Boolean(pollQuestion.trim() && pollOptions.filter((option) => option.trim()).length >= 2)
+            : composeType === 'EVENT' ? Boolean(eventTitle.trim() && eventDate)
+              : false
 
-  const selectMediaFile = (file?: File) => {
+  const selectMediaFile = (file?: File, type = composeType) => {
     if (!file) {
       setMediaFile(null)
       return
@@ -320,7 +363,7 @@ export function MessagesPage() {
       DOCUMENT: { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
       VOICE: { webm: 'audio/webm', ogg: 'audio/ogg', mp3: 'audio/mpeg', m4a: 'audio/mp4' },
     }
-    const expectedType = extension ? allowed[composeType]?.[extension] : undefined
+    const expectedType = extension ? allowed[type]?.[extension] : undefined
     const actualType = file.type.split(';')[0] || expectedType
     if (!expectedType || actualType !== expectedType) {
       setMediaFile(null)
@@ -380,9 +423,12 @@ export function MessagesPage() {
     if (!canSend || !selectedId || sending) return
     const metadata = composeType === 'CONTACT' ? { name: contactName.trim(), phone: contactPhone.trim() }
       : composeType === 'LOCATION' ? { label: locationLabel.trim(), latitude: Number(latitude), longitude: Number(longitude) }
-        : undefined
+        : composeType === 'POLL' ? { question: pollQuestion.trim(), options: pollOptions.filter((option) => option.trim()).map((text, index) => ({ id: `option-${index + 1}`, text: text.trim() })), votes: {} }
+          : composeType === 'EVENT' ? { title: eventTitle.trim(), startsAt: new Date(eventDate).toISOString(), responses: {} }
+            : undefined
     try {
       setSending(true)
+      setSendFailed(false)
       setError('')
       const attachmentUrl = mediaFile
         ? (composeType === 'IMAGE' ? await uploadMedia(mediaFile) : await uploadMessageAttachment(mediaFile)).mediaUrl
@@ -410,12 +456,46 @@ export function MessagesPage() {
       setLocationLabel('')
       setLatitude('')
       setLongitude('')
+      setPollQuestion('')
+      setPollOptions(['', ''])
+      setEventTitle('')
+      setEventDate('')
+      setComposeType('TEXT')
       setReplyTarget(null)
       await loadConversations()
     } catch (sendError) {
+      setSendFailed(true)
       setError(sendError instanceof Error ? sendError.message : 'Unable to send message.')
     } finally {
       setSending(false)
+    }
+  }
+
+  const shareCurrentLocation = () => {
+    setShowAttachmentSheet(false)
+    setComposeType('LOCATION')
+    if (!navigator.geolocation) {
+      setError('Location sharing is unavailable in this browser. You can enter coordinates manually.')
+      return
+    }
+    navigator.geolocation.getCurrentPosition((position) => {
+      setLatitude(String(position.coords.latitude))
+      setLongitude(String(position.coords.longitude))
+      setLocationLabel('Shared location')
+      setError('')
+    }, (locationError) => {
+      setError(locationError.code === locationError.PERMISSION_DENIED
+        ? 'Location permission was denied. Allow location access or enter coordinates manually.'
+        : 'Unable to read your location. Check device location settings and try again.')
+    }, { enableHighAccuracy: true, timeout: 10000 })
+  }
+
+  const respondToInteractiveMessage = async (message: MessageItem, response: { optionId?: string; response?: 'GOING' | 'MAYBE' | 'NOT_GOING' }) => {
+    try {
+      const result = await apiRequest<{ message: MessageItem }>(`/api/messages/${encodeURIComponent(message.id)}/interactive-response`, { method: 'POST', body: JSON.stringify(response) })
+      setMessages((current) => current.map((item) => item.id === message.id ? result.message : item))
+    } catch (responseError) {
+      setError(responseError instanceof Error ? responseError.message : 'Unable to save your response.')
     }
   }
 
@@ -512,24 +592,21 @@ export function MessagesPage() {
   }
 
   return (
-    <div className="flex h-[calc(100dvh-9.5rem)] min-h-0 w-full flex-col overflow-hidden bg-[#f4f6fb] p-0 sm:p-2 lg:h-[calc(100dvh-7rem)]">
-      <header className="mx-auto w-full max-w-7xl shrink-0 border-b border-blue-900/20 bg-gradient-to-r from-[#10214f] via-blue-800 to-indigo-700 p-3 text-white shadow-sm sm:rounded-t-2xl sm:p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div><p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-200">NOVAKOKO Connect</p><h2 className="mt-1 text-xl font-semibold sm:text-2xl">Messages</h2></div>
-          <p className="text-sm text-blue-100">Your chats, groups, and communities in one place.</p>
+    <div style={{ height: `${viewportHeight}px` }} className={`relative flex min-h-0 w-full flex-col overflow-hidden bg-white text-slate-900 ${keyboardOpen ? 'pb-0' : 'pb-[calc(4.1rem+env(safe-area-inset-bottom))]'}`}>
+      <header className="z-20 flex h-14 shrink-0 items-center justify-between border-b border-slate-100 bg-white px-4 sm:px-6">
+        <div className="flex items-center gap-2"><div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#e8f5e9] text-sm font-black text-[#008f48]">N</div><p className="text-sm font-bold tracking-wide text-slate-900">NOVAKOKO</p></div>
+        <div className="flex items-center gap-1">
+          <Link to="/updates?create=1" aria-label="Create a photo status" title="Camera status" className="rounded-full p-2 text-slate-700 hover:bg-slate-100"><Camera className="h-5 w-5" aria-hidden="true" /></Link>
+          <div className="relative">
+            <button type="button" aria-label="More chat options" aria-expanded={showChatMenu} title="More options" onClick={() => setShowChatMenu((open) => !open)} className="rounded-full p-2 text-slate-700 hover:bg-slate-100"><MoreVertical className="h-5 w-5" aria-hidden="true" /></button>
+            {showChatMenu ? <div className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-slate-200 bg-white p-1 shadow-xl"><button type="button" onClick={() => { setShowChatMenu(false); void openNewConversation() }} className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">New chat</button><button type="button" onClick={() => { setShowArchived((current) => !current); setShowChatMenu(false) }} className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">{showArchived ? 'Hide archived' : 'Archived chats'}</button><Link to="/communities" onClick={() => setShowChatMenu(false)} className="block rounded-lg px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">Communities</Link></div> : null}
+          </div>
         </div>
-        <nav aria-label="Communication sections" className="mt-4 flex gap-2 overflow-x-auto pb-1">
-          <Link to="/messages" aria-current="page" className="inline-flex shrink-0 items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-blue-800"><MessageCircleMore className="h-4 w-4" aria-hidden="true" />Chats</Link>
-          <Link to="/communities?type=GROUP" className="inline-flex shrink-0 items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/20"><UsersRound className="h-4 w-4" aria-hidden="true" />Groups</Link>
-          <Link to="/communities?type=COMMUNITY" className="inline-flex shrink-0 items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/20"><UsersRound className="h-4 w-4" aria-hidden="true" />Communities</Link>
-          <Link to="/communities?type=CHANNEL" className="inline-flex shrink-0 items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/20"><Megaphone className="h-4 w-4" aria-hidden="true" />Channels</Link>
-          <Link to="/calls" className="inline-flex shrink-0 items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/20"><Phone className="h-4 w-4" aria-hidden="true" />Calls</Link>
-        </nav>
       </header>
-      <div className="mx-auto grid min-h-0 w-full max-w-6xl flex-1 overflow-hidden rounded-b-[26px] border border-blue-100 bg-white shadow-[0_18px_60px_-38px_rgba(18,35,87,.35)] lg:grid-cols-[340px_minmax(0,1fr)]">
+      <div className="mx-auto grid min-h-0 w-full max-w-7xl flex-1 overflow-hidden bg-white lg:grid-cols-[360px_minmax(0,1fr)]">
         <aside className={`${selectedId ? 'hidden lg:block' : 'block'} min-h-0 min-w-0 overflow-y-auto border-b border-slate-200 bg-white p-3 lg:border-b-0 lg:border-r lg:p-4`}>
           <div className="flex items-center justify-between gap-3">
-            <div><h3 className="text-lg font-semibold text-slate-900">Chats</h3><p className="text-xs text-slate-500">Private and group conversations</p></div>
+            <h3 className="text-2xl font-bold text-slate-900">Chats</h3>
             <Button variant="primary" size="sm" onClick={() => void openNewConversation()}>New chat</Button>
           </div>
 
@@ -555,64 +632,77 @@ export function MessagesPage() {
             </div>
           ) : null}
 
-          <label className="mt-4 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-500 shadow-sm">
+          <label className="mt-4 flex items-center gap-3 rounded-full bg-[#f1f4f2] px-4 py-2.5 text-sm text-slate-500">
             <Search className="h-4 w-4" aria-hidden="true" />
-            <input aria-label="Search conversations" placeholder="Search conversations" value={search} onChange={(event) => setSearch(event.target.value)} className="w-full border-0 bg-transparent text-slate-800 placeholder:text-slate-400 focus:outline-none" />
+            <input aria-label="Search conversations" placeholder="Search conversations" value={search} onChange={(event) => setSearch(event.target.value)} className="w-full border-0 bg-transparent text-slate-800 placeholder:text-slate-500 focus:outline-none" />
           </label>
           <div className="mt-3 flex gap-2 overflow-x-auto pb-1" aria-label="Filter conversations">
             {([
-              ['all', 'All chats'],
+              ['all', 'All'],
               ['unread', 'Unread'],
+              ['favorites', 'Favorites'],
               ['groups', 'Groups'],
             ] as const).map(([filter, label]) => (
-              <button key={filter} type="button" aria-pressed={conversationFilter === filter} onClick={() => setConversationFilter(filter)} className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold transition ${conversationFilter === filter ? 'bg-blue-700 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-blue-50'}`}>
-                {label}
+              <button key={filter} type="button" aria-pressed={conversationFilter === filter} onClick={() => setConversationFilter(filter)} className={`shrink-0 rounded-full px-4 py-2 text-xs font-semibold transition ${conversationFilter === filter ? 'bg-[#e8f5e9] text-[#087b43]' : 'bg-[#f3f5f3] text-slate-700 hover:bg-[#e8f5e9]'}`}>
+                {label}{filter === 'unread' && conversations.some((conversation) => (conversation.unreadCount ?? 0) > 0) ? <span className="ml-1.5">{conversations.reduce((sum, conversation) => sum + (conversation.unreadCount ?? 0), 0)}</span> : null}
               </button>
             ))}
           </div>
           <button type="button" onClick={() => setShowArchived((current) => !current)} className="mt-3 inline-flex items-center gap-2 text-xs font-medium text-slate-600"><Archive className="h-4 w-4" aria-hidden="true" />{showArchived ? 'Hide archived' : 'Show archived'}</button>
 
-          <div className="mt-3 space-y-2">
-            {loading ? <div className="rounded-2xl border border-slate-200 bg-white p-3 text-sm text-slate-500">Loading conversations…</div> : null}
-            {!loading && conversations.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-3 text-sm text-slate-500">No conversations yet.</div> : null}
-            {!loading && conversations.length > 0 && visibleConversations.length === 0 ? <div className="rounded-2xl bg-white p-3 text-sm text-slate-500">No matching conversations.</div> : null}
+          <div className="mt-3 divide-y divide-slate-100">
+            {loading ? <div className="p-3 text-sm text-slate-500">Loading conversations…</div> : null}
+            {!loading && conversations.length === 0 ? <div className="p-3 text-sm text-slate-500">No conversations yet.</div> : null}
+            {!loading && conversations.length > 0 && visibleConversations.length === 0 ? <div className="p-3 text-sm text-slate-500">No matching conversations.</div> : null}
             {visibleConversations.map((conversation) => {
               const lastMessage = conversation.lastMessage ?? null
               const peer = conversation.participants.find((participant) => participant.userId !== user?.id)?.user
               const title = conversation.name ?? peer?.name ?? 'Group conversation'
+              const isGroupConversation = conversation.isGroup || conversation.participants.length > 2
+              const time = lastMessage?.createdAt ?? conversation.lastMessageAt ?? conversation.updatedAt
               return (
-                <button key={conversation.id} type="button" onClick={() => { setSelectedId(conversation.id); setSearchResults(null) }} className={`flex w-full items-center gap-3 rounded-xl p-3 text-left transition ${selectedId === conversation.id ? 'bg-indigo-50 ring-1 ring-indigo-100' : 'hover:bg-slate-100'}`}>
-                  <Avatar src="" alt={title} size="md" />
+                <button key={conversation.id} type="button" onClick={() => { setSelectedId(conversation.id); setSearchResults(null) }} className={`flex w-full items-center gap-3 px-2 py-3 text-left transition ${selectedId === conversation.id ? 'bg-[#f2f8f3]' : 'hover:bg-slate-50'}`}>
+                    <Avatar src={peer?.avatar ?? ''} alt={title} size="md" />
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center justify-between gap-2">
-                      <span className="truncate font-medium text-slate-900">{title}</span>
-                      {conversation.pinnedAt ? <Pin className="h-3.5 w-3.5 shrink-0 text-indigo-600" aria-label="Pinned" /> : null}
+                      <span className="truncate font-semibold text-slate-900">{title}</span>
+                      <time className={`shrink-0 text-[11px] ${(conversation.unreadCount ?? 0) ? 'text-[#078744]' : 'text-slate-500'}`}>{new Date(time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>
                     </span>
-                    <span className="block truncate text-xs text-slate-500">{lastMessage?.text ?? conversation.lastMessagePreview ?? 'Start the conversation'}</span>
+                    <span className="mt-0.5 flex items-center gap-1.5">
+                      {lastMessage && lastMessage.senderId === user?.id ? <CheckCheck className={`h-3.5 w-3.5 shrink-0 ${lastMessage.readAt ? 'text-[#07934d]' : 'text-slate-400'}`} aria-label={lastMessage.readAt ? 'Read' : 'Sent'} /> : null}
+                      <span className="truncate text-xs text-slate-500">{isGroupConversation && peer ? `${peer.name}: ` : ''}{lastMessage?.text || (lastMessage?.contentType ? `[${lastMessage.contentType.toLowerCase()}]` : conversation.lastMessagePreview) || 'Start the conversation'}</span>
+                      {conversation.mutedUntil && new Date(conversation.mutedUntil).getTime() > Date.now() ? <VolumeX className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-label="Muted" /> : null}
+                      {conversation.starredAt ? <Star className="h-3 w-3 shrink-0 fill-amber-400 text-amber-500" aria-label="Favorite" /> : null}
+                    </span>
                   </span>
-                  {conversation.unreadCount ? <span aria-label={`${conversation.unreadCount} unread messages`} className="flex h-5 min-w-5 items-center justify-center rounded-full bg-indigo-600 px-1 text-[10px] font-semibold text-white">{conversation.unreadCount > 99 ? '99+' : conversation.unreadCount}</span> : null}
+                  {conversation.unreadCount ? <span aria-label={`${conversation.unreadCount} unread messages`} className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[#078744] px-1 text-[10px] font-semibold text-white">{conversation.unreadCount > 99 ? '99+' : conversation.unreadCount}</span> : null}
                 </button>
               )
             })}
           </div>
         </aside>
 
-        <section className={`${selectedId ? 'flex' : 'hidden lg:flex'} h-full min-h-0 min-w-0 flex-col bg-[#f4f5fb] bg-[radial-gradient(#d9dced_1px,transparent_1px)] [background-size:18px_18px] p-0`}>
-          {error ? <div className="mb-3 rounded-2xl border border-slate-200 bg-white p-3 text-sm text-slate-600" role="alert">{error}</div> : null}
+        <section className={`${selectedId ? 'flex' : 'hidden lg:flex'} h-full min-h-0 min-w-0 flex-col bg-[#efeae2] bg-[radial-gradient(#d8d4ca_0.7px,transparent_0.7px)] [background-size:20px_20px] p-0`}>
+          {error && selectedId ? <div className="mx-2 mb-2 flex items-center justify-between gap-2 rounded-xl border border-rose-200 bg-white p-2.5 text-xs text-rose-700" role="alert"><span className="min-w-0">{error}</span>{sendFailed ? <button type="button" onClick={() => void handleSendMessage()} disabled={sending || !canSend} className="shrink-0 font-semibold underline disabled:opacity-50">Retry send</button> : null}</div> : null}
+                      {!selectedId && error ? <div role="alert" className="flex items-center justify-between gap-2 px-2 py-3 text-xs text-rose-700"><span>{error}</span><button type="button" onClick={() => void loadConversations()} className="shrink-0 font-semibold underline">Retry</button></div> : null}
           {activeConversation ? (
             <>
               <header className="sticky top-0 z-10 flex min-h-14 items-center justify-between gap-1 border-b border-slate-200 bg-white px-1 py-2 shadow-sm">
                 <div className="flex min-w-0 items-center gap-3">
                   <button type="button" onClick={() => setSelectedId('')} aria-label="Back to chats" className="rounded-full p-2 text-slate-500 hover:bg-blue-50 lg:hidden"><ArrowLeft className="h-5 w-5" aria-hidden="true" /></button>
-                  <Avatar src="" alt={activeConversation.name ?? activePeer?.name ?? 'Group'} size="md" />
+                  <Avatar src={activePeer?.avatar ?? ''} alt={activeConversation.name ?? activePeer?.name ?? 'Group'} size="md" />
                   <div className="min-w-0">
                     <p className="truncate font-semibold text-slate-900">{activeConversation.name ?? activePeer?.name ?? 'Group conversation'}</p>
                     {activePeer ? <Link to={`/profile/${encodeURIComponent(activePeer.id)}`} className="text-xs text-indigo-700">View profile</Link> : <p className="text-xs text-slate-500">{activeConversation.participants.length} members</p>}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto">
-                  {activeConversation.isGroup && activeConversation.participants.some((participant) => participant.userId === user?.id && ['OWNER', 'MODERATOR'].includes(participant.role ?? '')) ? <button type="button" title="Add group members" aria-label="Add group members" onClick={() => { setShowAddMembers((open) => !open); setSelectedAddParticipants([]); if (!directory.length) void loadDirectory() }} className="rounded-full p-1.5 text-indigo-700 hover:bg-indigo-50"><UserPlus className="h-4 w-4" aria-hidden="true" /></button> : null}
-                  <Link to="/calls" title="Open voice and video calls" aria-label="Open calls" className="rounded-full p-1.5 text-blue-700 hover:bg-blue-50"><Phone className="h-4 w-4" aria-hidden="true" /></Link>
+                  {activeConversation.isGroup && activeConversation.participants.some((participant) => participant.userId === user?.id && ['OWNER', 'MODERATOR'].includes(participant.role ?? '')) ? <>
+                    <button type="button" title="Manage group members" aria-label="Manage group members" aria-expanded={showManageMembers} onClick={() => setShowManageMembers((open) => !open)} className="rounded-full p-1.5 text-slate-600 hover:bg-slate-100"><Shield className="h-4 w-4" aria-hidden="true" /></button>
+                    <button type="button" title="Add group members" aria-label="Add group members" onClick={() => { setShowAddMembers((open) => !open); setSelectedAddParticipants([]); if (!directory.length) void loadDirectory() }} className="rounded-full p-1.5 text-[#078744] hover:bg-[#e8f5e9]"><UserPlus className="h-4 w-4" aria-hidden="true" /></button>
+                  </> : null}
+                  {(activePeer || activeConversation.isGroup) ? <Link to={activeConversation.isGroup ? `/calls?conversation=${encodeURIComponent(activeConversation.id)}&type=video` : `/calls?user=${encodeURIComponent(activePeer!.id)}&type=video`} title="Start video call" aria-label="Start video call" className="rounded-full p-1.5 text-slate-600 hover:bg-slate-100"><Video className="h-4 w-4" aria-hidden="true" /></Link> : null}
+                  {(activePeer || activeConversation.isGroup) ? <Link to={activeConversation.isGroup ? `/calls?conversation=${encodeURIComponent(activeConversation.id)}&type=voice` : `/calls?user=${encodeURIComponent(activePeer!.id)}&type=voice`} title="Start voice call" aria-label="Start voice call" className="rounded-full p-1.5 text-slate-600 hover:bg-slate-100"><Phone className="h-4 w-4" aria-hidden="true" /></Link> : null}
                   <button type="button" title="Pin conversation" aria-label="Pin conversation" onClick={() => void updatePreference('pinned')} className={`rounded-full p-1.5 ${activeConversation.pinnedAt ? 'text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}><Pin className="h-4 w-4" /></button>
                   <button type="button" title="Star conversation" aria-label="Star conversation" onClick={() => void updatePreference('starred')} className={`rounded-full p-1.5 ${activeConversation.starredAt ? 'text-amber-600' : 'text-slate-500 hover:bg-slate-100'}`}><Star className="h-4 w-4" /></button>
                   <button type="button" title="Mute for 24 hours" aria-label="Mute conversation" onClick={() => void updatePreference('mutedUntil')} className={`rounded-full p-1.5 ${activeConversation.mutedUntil && new Date(activeConversation.mutedUntil).getTime() > Date.now() ? 'text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}><VolumeX className="h-4 w-4" /></button>
@@ -621,7 +711,12 @@ export function MessagesPage() {
                 </div>
               </header>
 
-              {showAddMembers && activeConversation.isGroup ? <section aria-label="Add group members" className="mt-2 rounded-xl border border-indigo-100 bg-white p-3">
+              {showManageMembers && activeConversation.isGroup ? <section aria-label="Manage group members" className="mx-2 mt-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                <div className="flex items-center justify-between"><h3 className="text-sm font-semibold text-slate-900">Group admins and members</h3><button type="button" onClick={() => setShowManageMembers(false)} aria-label="Close member management" className="rounded-full p-1 text-slate-500 hover:bg-slate-100"><X className="h-4 w-4" /></button></div>
+                <ul className="mt-2 max-h-40 divide-y divide-slate-100 overflow-y-auto">{activeConversation.participants.map((participant) => <li key={participant.userId} className="flex items-center gap-2 py-2 text-sm"><span className="min-w-0 flex-1 truncate text-slate-800">{participant.user?.name ?? participant.userId}{participant.userId === user?.id ? ' (you)' : ''}</span><span className="text-xs capitalize text-slate-500">{participant.role === 'OWNER' ? 'Owner' : participant.role === 'MODERATOR' ? 'Admin' : 'Member'}</span>{participant.role !== 'OWNER' ? <button type="button" onClick={() => void changeGroupMemberRole(participant)} className="rounded-lg px-2 py-1 text-xs font-semibold text-[#087b43] hover:bg-[#e8f5e9]">{participant.role === 'MODERATOR' ? 'Remove admin' : 'Make admin'}</button> : null}</li>)}</ul>
+              </section> : null}
+
+              {showAddMembers && activeConversation.isGroup ? <section aria-label="Add group members" className="mx-2 mt-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <h3 className="text-sm font-semibold text-slate-900">Add members</h3>
                 {directoryError ? <p role="alert" className="mt-2 text-xs text-rose-700">{directoryError}</p> : null}
                 <div className="mt-2 max-h-36 space-y-1 overflow-y-auto">
@@ -649,23 +744,39 @@ export function MessagesPage() {
                 {messagesLoading ? <div className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-500">Loading messages…</div> : null}
                 {!messagesLoading && searchResults && searchResults.length === 0 ? <p className="text-center text-sm text-slate-500">No matching messages.</p> : null}
                 {!messagesLoading && !searchResults && messages.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">No messages yet. Start the conversation.</div> : null}
-                {(searchResults ?? messages).map((message) => {
+                {(searchResults ?? messages).map((message, index) => {
                   const isOwn = message.senderId === user?.id
                   const reply = message.replyToId ? messages.find((item) => item.id === message.replyToId) : null
+                  const previousMessage = (searchResults ?? messages)[index - 1]
+                  const startsNewDate = !previousMessage || new Date(previousMessage.createdAt).toDateString() !== new Date(message.createdAt).toDateString()
+                  const dayDifference = Math.floor((new Date().setHours(0, 0, 0, 0) - new Date(message.createdAt).setHours(0, 0, 0, 0)) / 86400000)
+                  const dateLabel = dayDifference === 0 ? 'Today' : dayDifference === 1 ? 'Yesterday' : new Date(message.createdAt).toLocaleDateString()
+                  const pollOptionsForMessage = Array.isArray(message.metadata?.options) ? message.metadata.options as Array<{ id: string; text: string }> : []
+                  const pollVotes = message.metadata?.votes && typeof message.metadata.votes === 'object' ? message.metadata.votes as Record<string, string> : {}
+                  const eventResponses = message.metadata?.responses && typeof message.metadata.responses === 'object' ? message.metadata.responses as Record<string, string> : {}
+                  const pollVoteCount = Object.keys(pollVotes).length
                   return (
-                    <div key={message.id} className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[78%] rounded-2xl px-3 py-2 text-sm shadow-sm sm:max-w-[70%] ${isOwn ? 'bg-blue-600 text-white' : 'bg-white text-slate-700'}`}>
+                    <Fragment key={message.id}>
+                    {startsNewDate ? <div className="my-3 flex justify-center"><span className="rounded-lg bg-white/90 px-3 py-1 text-[11px] font-medium text-slate-600 shadow-sm">{dateLabel}</span></div> : null}
+                    <div className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[86%] rounded-2xl px-3 py-2 text-sm shadow-sm sm:max-w-[70%] ${isOwn ? 'rounded-tr-sm bg-[#d9fdd3] text-slate-800' : 'rounded-tl-sm bg-white text-slate-700'}`}>
                         {message.forwardedFromId ? <p className={`mb-1 text-[10px] ${isOwn ? 'text-indigo-100' : 'text-slate-500'}`}>Forwarded</p> : null}
                         {reply ? <p className={`mb-2 border-l-2 pl-2 text-xs ${isOwn ? 'border-indigo-200 text-indigo-100' : 'border-indigo-400 text-slate-500'}`}>{reply.text}</p> : null}
                         {['IMAGE', 'VIDEO', 'VOICE', 'DOCUMENT'].includes(message.contentType ?? '') && message.mediaUrl ? <MessageMediaAttachment message={message} isOwn={isOwn} /> : null}
                         {message.contentType === 'VOICE' && message.mediaUrl ? <audio controls crossOrigin={message.mediaUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} src={resolveMediaUrl(message.mediaUrl)} className="mb-2 max-w-full" /> : null}
                         {message.text ? <p className="whitespace-pre-wrap">{message.text}</p> : null}
-                        {message.contentType === 'CONTACT' && message.metadata ? <p>{String(message.metadata.name ?? 'Contact')} · {String(message.metadata.phone ?? '')}</p> : null}
-                        {message.contentType === 'LOCATION' && message.metadata ? <p>{String(message.metadata.label ?? 'Location')} · {String(message.metadata.latitude)}, {String(message.metadata.longitude)}</p> : null}
+                        {message.contentType === 'CONTACT' && message.metadata ? <p><strong>{String(message.metadata.name ?? 'Contact')}</strong><br /><a href={`tel:${encodeURIComponent(String(message.metadata.phone ?? ''))}`} className="underline">{String(message.metadata.phone ?? '')}</a></p> : null}
+                        {message.contentType === 'LOCATION' && message.metadata ? <a href={`https://maps.google.com/?q=${encodeURIComponent(`${String(message.metadata.latitude)},${String(message.metadata.longitude)}`)}`} target="_blank" rel="noreferrer" className="underline">{String(message.metadata.label ?? 'Location')} · Open map</a> : null}
+                        {message.contentType === 'POLL' && message.metadata ? <section className="min-w-[220px]" aria-label="Poll"><p className="mb-2 font-semibold">{String(message.metadata.question ?? 'Poll')}</p><div className="space-y-1.5">{pollOptionsForMessage.map((option) => {
+                          const voteCount = Object.values(pollVotes).filter((vote) => vote === option.id).length
+                          const selected = pollVotes[user?.id ?? ''] === option.id
+                          return <button key={option.id} type="button" onClick={() => void respondToInteractiveMessage(message, { optionId: option.id })} aria-pressed={selected} className={`relative w-full overflow-hidden rounded-lg border px-2.5 py-2 text-left text-xs ${selected ? 'border-[#078744]' : 'border-slate-200'}`}><span className="absolute inset-y-0 left-0 bg-[#e8f5e9]" style={{ width: `${pollVoteCount ? voteCount / pollVoteCount * 100 : 0}%` }} /><span className="relative flex justify-between gap-2"><span>{option.text}</span><span>{voteCount}</span></span></button>
+                        })}</div><p className="mt-1 text-[10px] text-slate-500">{pollVoteCount} votes</p></section> : null}
+                        {message.contentType === 'EVENT' && message.metadata ? <section className="min-w-[220px]" aria-label="Event"><p className="font-semibold">{String(message.metadata.title ?? 'Event')}</p><p className="mt-1 text-xs">{new Date(String(message.metadata.startsAt ?? '')).toLocaleString()}</p><div className="mt-2 flex gap-1">{([['GOING', 'Going'], ['MAYBE', 'Maybe'], ['NOT_GOING', 'Can’t go']] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={eventResponses[user?.id ?? ''] === value} onClick={() => void respondToInteractiveMessage(message, { response: value })} className={`rounded-full px-2 py-1 text-[10px] font-semibold ${eventResponses[user?.id ?? ''] === value ? 'bg-[#078744] text-white' : 'bg-slate-100 text-slate-700'}`}>{label}</button>)}</div><p className="mt-1 text-[10px] text-slate-500">{Object.values(eventResponses).filter((value) => value === 'GOING').length} going</p></section> : null}
                         <div className={`mt-1 flex items-center gap-1 text-[10px] ${isOwn ? 'text-indigo-100' : 'text-slate-500'}`}>
                           <span>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
                           {message.editedAt ? <span>· edited</span> : null}
-                          {isOwn ? <span>· {message.readAt ? 'Read' : 'Sent'}</span> : null}
+                          {isOwn ? message.readAt || message.status === 'READ' ? <CheckCheck className="h-3.5 w-3.5 text-[#078744]" aria-label="Read" /> : message.status === 'DELIVERED' ? <CheckCheck className="h-3.5 w-3.5 text-slate-500" aria-label="Delivered" /> : <Check className="h-3.5 w-3.5 text-slate-500" aria-label="Sent" /> : null}
                         </div>
                         {message.reactions?.length ? <p className={`mt-1 text-xs ${isOwn ? 'text-indigo-100' : 'text-slate-500'}`}>{message.reactions.map((reaction) => reaction.type).join(' ')}</p> : null}
                         {!message.deletedAt ? <div className={`mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] ${isOwn ? 'text-indigo-100' : 'text-slate-500'}`}>
@@ -680,41 +791,45 @@ export function MessagesPage() {
                         {forwardingId === message.id ? <div className="mt-2 flex gap-2"><select aria-label="Forward to conversation" value={forwardTargetId} onChange={(event) => setForwardTargetId(event.target.value)} className="min-w-0 flex-1 rounded-lg px-2 py-1 text-slate-900"><option value="">Choose chat</option>{conversations.filter((item) => item.id !== selectedId).map((item) => <option key={item.id} value={item.id}>{item.name ?? item.participants.find((participant) => participant.userId !== user?.id)?.user?.name ?? 'Group chat'}</option>)}</select><button type="button" disabled={!forwardTargetId} onClick={() => void forwardMessage(message)} className="font-semibold disabled:opacity-50">Send</button></div> : null}
                       </div>
                     </div>
+                    </Fragment>
                   )
                 })}
               </div>
 
-              <form onSubmit={(event) => void handleSendMessage(event)} className="sticky bottom-0 mt-1 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-lg">
-                {replyTarget ? <div className="mb-2 flex items-center justify-between rounded-xl bg-white px-3 py-2 text-xs text-slate-600"><span className="truncate">Replying to: {replyTarget.text || replyTarget.contentType}</span><button type="button" onClick={() => setReplyTarget(null)} aria-label="Cancel reply">×</button></div> : null}
-                <div className="flex flex-wrap gap-2">
-                  <select aria-label="Message type" value={composeType} disabled={recording} onChange={(event) => { setComposeType(event.target.value); setMediaFile(null); setMediaUrl('') }} className="rounded-xl border border-slate-200 bg-white px-2 py-2 text-xs text-slate-700">
-                    {['TEXT', 'IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE', 'CONTACT', 'LOCATION'].map((type) => <option key={type} value={type}>{type[0] + type.slice(1).toLowerCase()}</option>)}
-                  </select>
-                  {['IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE'].includes(composeType) ? <input type="url" aria-label="Attachment URL" value={mediaUrl} onChange={(event) => { setMediaUrl(event.target.value); setMediaFile(null) }} placeholder="Attachment URL" className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm" /> : null}
-                  {['IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE'].includes(composeType) ? <label className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-xs text-slate-600">
-                    {composeType === 'IMAGE' ? 'Upload image' : composeType === 'VIDEO' ? 'Choose or capture video' : composeType === 'DOCUMENT' ? 'Choose PDF or DOCX' : 'Choose audio file'} (up to 10 MB)
-                    <input
-                      type="file"
-                      accept={composeType === 'IMAGE' ? 'image/jpeg,image/png,image/webp' : composeType === 'VIDEO' ? 'video/mp4,video/webm,video/ogg' : composeType === 'DOCUMENT' ? '.pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'audio/webm,audio/ogg,audio/mpeg,audio/mp4'}
-                      capture={composeType === 'VIDEO' ? 'environment' : undefined}
-                      aria-label={`Upload message ${composeType.toLowerCase()}`}
-                      onChange={(event) => selectMediaFile(event.target.files?.[0])}
-                      className="mt-1 block w-full text-xs"
-                    />
-                  </label> : null}
-                  {composeType === 'VOICE' ? <Button type="button" variant="secondary" size="sm" disabled={sending} onClick={recording ? stopVoiceRecording : () => void startVoiceRecording()} icon={recording ? <Square className="h-4 w-4" aria-hidden="true" /> : <Mic className="h-4 w-4" aria-hidden="true" />}>{recording ? 'Stop recording' : 'Record voice'}</Button> : null}
-                  {mediaFile && mediaPreviewUrl ? <div className="w-full rounded-xl bg-slate-50 p-2 text-xs text-slate-600">
-                    {composeType === 'VIDEO' ? <video controls src={mediaPreviewUrl} className="max-h-48 rounded-lg" /> : null}
-                    {composeType === 'VOICE' ? <audio controls src={mediaPreviewUrl} className="max-w-full" /> : null}
-                    {composeType === 'DOCUMENT' ? <p>Ready to send: {mediaFile.name}</p> : null}
-                    <button type="button" onClick={() => setMediaFile(null)} className="mt-1 font-medium text-rose-700">Remove attachment</button>
-                  </div> : null}
-                  {composeType === 'CONTACT' ? <><input aria-label="Contact name" value={contactName} onChange={(event) => setContactName(event.target.value)} placeholder="Contact name" className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm" /><input aria-label="Contact phone" value={contactPhone} onChange={(event) => setContactPhone(event.target.value)} placeholder="Phone number" className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm" /></> : null}
-                  {composeType === 'LOCATION' ? <><input aria-label="Location label" value={locationLabel} onChange={(event) => setLocationLabel(event.target.value)} placeholder="Place name" className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm" /><input aria-label="Latitude" type="number" step="any" value={latitude} onChange={(event) => setLatitude(event.target.value)} placeholder="Latitude" className="w-28 rounded-xl border border-slate-200 px-3 py-2 text-sm" /><input aria-label="Longitude" type="number" step="any" value={longitude} onChange={(event) => setLongitude(event.target.value)} placeholder="Longitude" className="w-28 rounded-xl border border-slate-200 px-3 py-2 text-sm" /></> : null}
-                </div>
-                <div className="mt-1 flex items-center gap-2">
-                  <input aria-label="Type message" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && composeType === 'TEXT') { event.preventDefault(); void handleSendMessage() } }} placeholder={composeType === 'TEXT' ? 'Write a message…' : 'Optional message'} className="min-w-0 flex-1 border-0 bg-transparent text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none" />
-                  <Button type="submit" variant="primary" size="sm" disabled={sending || !canSend} icon={<SendHorizontal className="h-4 w-4" aria-hidden="true" />}>{sending ? 'Sending…' : 'Send'}</Button>
+              <form onSubmit={(event) => void handleSendMessage(event)} className="relative mt-auto border-t border-slate-200 bg-white px-2 pb-[max(0.4rem,env(safe-area-inset-bottom))] pt-2 sm:px-3">
+                {showEmojiPicker ? <section aria-label="Choose emoji" className="absolute bottom-full left-2 z-30 mb-2 flex gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-lg">{['😀', '😂', '❤️', '👍', '🎉', '🙏'].map((emoji) => <button key={emoji} type="button" onClick={() => { setDraft((current) => `${current}${emoji}`); setShowEmojiPicker(false) }} aria-label={`Insert ${emoji}`} className="rounded-lg p-2 text-xl hover:bg-slate-100">{emoji}</button>)}</section> : null}
+                {showAttachmentSheet ? <section aria-label="Choose attachment" className="absolute inset-x-2 bottom-full z-30 mb-2 rounded-2xl border border-slate-200 bg-white p-4 shadow-xl sm:inset-x-3">
+                  <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-slate-300" aria-hidden="true" />
+                  <div className="grid grid-cols-4 gap-3">
+                    {[
+                      { label: 'Gallery', icon: Images, action: () => { setComposeType('IMAGE'); setShowAttachmentSheet(false); galleryInputRef.current?.click() } },
+                      { label: 'Camera', icon: Camera, action: () => { setComposeType('IMAGE'); setShowAttachmentSheet(false); cameraInputRef.current?.click() } },
+                      { label: 'Location', icon: MapPin, action: shareCurrentLocation },
+                      { label: 'Contact', icon: UsersRound, action: () => { setComposeType('CONTACT'); setShowAttachmentSheet(false) } },
+                      { label: 'Document', icon: FileText, action: () => { setComposeType('DOCUMENT'); setShowAttachmentSheet(false); documentInputRef.current?.click() } },
+                      { label: 'Poll', icon: ListChecks, action: () => { setComposeType('POLL'); setShowAttachmentSheet(false) } },
+                      { label: 'Event', icon: CalendarDays, action: () => { setComposeType('EVENT'); setShowAttachmentSheet(false) } },
+                      { label: 'AI Images', icon: Image, action: () => { setShowAttachmentSheet(false); setError('AI image generation is not configured in this app. No image was created.') } },
+                    ].map(({ label, icon: Icon, action }) => <button key={label} type="button" onClick={action} className="flex min-h-20 flex-col items-center justify-center gap-2 rounded-xl text-xs font-medium text-slate-700 hover:bg-[#f1f6f2] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#078744]"><span className="flex h-11 w-11 items-center justify-center rounded-full bg-[#e8f5e9] text-[#087b43]"><Icon className="h-5 w-5" aria-hidden="true" /></span>{label}</button>)}
+                  </div>
+                  <button type="button" onClick={() => setShowAttachmentSheet(false)} aria-label="Close attachments" className="absolute right-2 top-2 rounded-full p-1 text-slate-500 hover:bg-slate-100"><X className="h-4 w-4" /></button>
+                </section> : null}
+                <input ref={galleryInputRef} type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/ogg" className="hidden" aria-label="Choose gallery media" onChange={(event) => { const file = event.target.files?.[0]; const type = file?.type.startsWith('video/') ? 'VIDEO' : 'IMAGE'; setComposeType(type); selectMediaFile(file, type); event.target.value = '' }} />
+                <input ref={cameraInputRef} type="file" accept="image/jpeg,image/png,image/webp" capture="environment" className="hidden" aria-label="Capture an image" onChange={(event) => { setComposeType('IMAGE'); selectMediaFile(event.target.files?.[0], 'IMAGE'); event.target.value = '' }} />
+                <input ref={documentInputRef} type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="hidden" aria-label="Choose a document" onChange={(event) => { setComposeType('DOCUMENT'); selectMediaFile(event.target.files?.[0], 'DOCUMENT'); event.target.value = '' }} />
+                {replyTarget ? <div className="mb-2 flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600"><span className="truncate">Replying to: {replyTarget.text || replyTarget.contentType}</span><button type="button" onClick={() => setReplyTarget(null)} aria-label="Cancel reply"><X className="h-4 w-4" /></button></div> : null}
+                {['IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE'].includes(composeType) ? <div className="mb-2 flex items-center gap-2"><input type="url" aria-label="Attachment URL" value={mediaUrl} onChange={(event) => { setMediaUrl(event.target.value); setMediaFile(null) }} placeholder="Paste an HTTPS attachment link" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-xs" />{mediaFile ? <span className="max-w-32 truncate text-xs text-slate-500">{mediaFile.name}</span> : null}</div> : null}
+                {mediaFile && mediaPreviewUrl ? <div className="mb-2 flex items-center justify-between rounded-lg bg-slate-50 p-2 text-xs text-slate-600">{composeType === 'IMAGE' ? <img src={mediaPreviewUrl} alt="Attachment preview" className="h-14 w-14 rounded-lg object-cover" /> : composeType === 'VIDEO' ? <video controls src={mediaPreviewUrl} className="max-h-16 rounded-lg" /> : composeType === 'VOICE' ? <audio controls src={mediaPreviewUrl} className="max-w-full" /> : <span className="truncate">{mediaFile.name}</span>}<button type="button" onClick={() => setMediaFile(null)} aria-label="Remove attachment" className="rounded-full p-1 text-slate-500 hover:bg-slate-200"><X className="h-4 w-4" /></button></div> : null}
+                {composeType === 'CONTACT' ? <div className="mb-2 flex gap-2"><input aria-label="Contact name" value={contactName} onChange={(event) => setContactName(event.target.value)} placeholder="Contact name" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm" /><input aria-label="Contact phone" value={contactPhone} onChange={(event) => setContactPhone(event.target.value)} placeholder="Phone number" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm" /></div> : null}
+                {composeType === 'LOCATION' ? <div className="mb-2 flex gap-2"><input aria-label="Location label" value={locationLabel} onChange={(event) => setLocationLabel(event.target.value)} placeholder="Place name" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm" /><input aria-label="Latitude" type="number" step="any" value={latitude} onChange={(event) => setLatitude(event.target.value)} placeholder="Latitude" className="w-24 rounded-lg border border-slate-200 px-2 py-2 text-xs" /><input aria-label="Longitude" type="number" step="any" value={longitude} onChange={(event) => setLongitude(event.target.value)} placeholder="Longitude" className="w-24 rounded-lg border border-slate-200 px-2 py-2 text-xs" /></div> : null}
+                {composeType === 'POLL' ? <div className="mb-2 space-y-2 rounded-xl bg-slate-50 p-2"><input aria-label="Poll question" value={pollQuestion} onChange={(event) => setPollQuestion(event.target.value)} placeholder="Ask a question" maxLength={180} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />{pollOptions.map((option, index) => <input key={index} aria-label={`Poll option ${index + 1}`} value={option} onChange={(event) => setPollOptions((current) => current.map((value, optionIndex) => optionIndex === index ? event.target.value : value))} placeholder={`Option ${index + 1}`} maxLength={100} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />)}{pollOptions.length < 10 ? <button type="button" onClick={() => setPollOptions((current) => [...current, ''])} className="text-xs font-semibold text-[#087b43]">Add option</button> : null}</div> : null}
+                {composeType === 'EVENT' ? <div className="mb-2 grid gap-2 rounded-xl bg-slate-50 p-2 sm:grid-cols-2"><input aria-label="Event title" value={eventTitle} onChange={(event) => setEventTitle(event.target.value)} placeholder="Event name" maxLength={120} className="rounded-lg border border-slate-200 px-3 py-2 text-sm" /><input aria-label="Event date and time" type="datetime-local" value={eventDate} onChange={(event) => setEventDate(event.target.value)} className="min-w-0 rounded-lg border border-slate-200 px-3 py-2 text-sm" /></div> : null}
+                <div className="flex items-center gap-1.5 rounded-full bg-[#f6f8f6] px-2 py-1">
+                  <button type="button" onClick={() => { setShowEmojiPicker((open) => !open); setShowAttachmentSheet(false) }} aria-label="Add emoji" aria-expanded={showEmojiPicker} title="Add emoji" className="rounded-full p-2 text-slate-500 hover:bg-white"><Smile className="h-5 w-5" /></button>
+                  <button type="button" onClick={() => setShowAttachmentSheet((open) => !open)} aria-label="Attach" aria-expanded={showAttachmentSheet} title="Attach" className="rounded-full p-2 text-slate-500 hover:bg-white"><Paperclip className="h-5 w-5" /></button>
+                  <textarea aria-label="Type message" rows={1} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && composeType === 'TEXT') { event.preventDefault(); void handleSendMessage() } }} placeholder={composeType === 'TEXT' ? 'Message' : 'Add a caption'} className="max-h-24 min-w-0 flex-1 resize-none border-0 bg-transparent py-2 text-sm text-slate-800 placeholder:text-slate-500 focus:outline-none" />
+                  <button type="button" onClick={() => { setComposeType('IMAGE'); cameraInputRef.current?.click() }} aria-label="Take a photo" title="Camera" className="rounded-full p-2 text-slate-500 hover:bg-white"><Camera className="h-5 w-5" /></button>
+                  {composeType === 'TEXT' && !draft.trim() || composeType === 'VOICE' && !canSend ? <button type="button" disabled={sending} onClick={() => { setComposeType('VOICE'); if (recording) stopVoiceRecording(); else void startVoiceRecording() }} aria-label={recording ? 'Stop voice recording' : 'Record voice message'} title={recording ? 'Stop recording' : 'Voice message'} className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${recording ? 'bg-red-600' : 'bg-[#078744]'} text-white disabled:opacity-60`}>{recording ? <Square className="h-4 w-4" /> : <Mic className="h-5 w-5" />}</button> : <button type="submit" disabled={sending || !canSend} aria-label={sending ? 'Sending message' : 'Send message'} title="Send" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#078744] text-white disabled:opacity-40"><SendHorizontal className="h-5 w-5" /></button>}
                 </div>
               </form>
             </>
@@ -723,6 +838,16 @@ export function MessagesPage() {
           )}
         </section>
       </div>
+      {!keyboardOpen ? <nav aria-label="NOVAKOKO navigation" className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-100 bg-white/95 px-2 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur">
+        <div className="mx-auto grid max-w-xl grid-cols-4">
+          {[
+            { label: 'Chats', to: '/messages', icon: MessageCircleMore, active: true },
+            { label: 'Updates', to: '/updates', icon: CircleDot, active: false },
+            { label: 'Communities', to: '/communities', icon: UsersRound, active: false },
+            { label: 'Calls', to: '/calls', icon: Phone, active: false },
+          ].map(({ label, to, icon: Icon, active }) => <Link key={to} to={to} aria-current={active ? 'page' : undefined} className={`flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-medium ${active ? 'text-[#078744]' : 'text-slate-500 hover:text-slate-900'}`}><span className={`flex h-7 w-14 items-center justify-center rounded-full ${active ? 'bg-[#e8f5e9]' : ''}`}><Icon className="h-5 w-5" aria-hidden="true" /></span>{label}</Link>)}
+        </div>
+      </nav> : null}
     </div>
   )
 }

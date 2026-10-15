@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Phone, Search, Video } from 'lucide-react'
 import { Room, RoomEvent, Track, type RemoteTrack } from 'livekit-client'
 import { Button } from '../components/ui/Button'
@@ -39,6 +40,8 @@ function AttachedTrack({ track, muted = false, className }: { track: Track; mute
 
 export function CallsPage() {
   const { user } = useAuth()
+  const [searchParams] = useSearchParams()
+  const requestedCallRef = useRef('')
   const [calls, setCalls] = useState<CallSession[]>([])
   const [users, setUsers] = useState<DirectoryUser[]>([])
   const [query, setQuery] = useState('')
@@ -220,7 +223,7 @@ export function CallsPage() {
     void loadData()
   }
 
-  const startCall = async (person: DirectoryUser, type: CallSession['type']) => {
+  const startCall = useCallback(async (person: DirectoryUser, type: CallSession['type']) => {
     setError('')
     setBusyId(person.id)
     let createdCall: CallSession | null = null
@@ -248,7 +251,57 @@ export function CallsPage() {
     } finally {
       setBusyId('')
     }
-  }
+  }, [closeCallRoom, replaceCall])
+
+  const startGroupCall = useCallback(async (conversationId: string, type: CallSession['type']) => {
+    setError('')
+    setBusyId(conversationId)
+    let createdCall: CallSession | null = null
+    try {
+      const response = await apiRequest<{ call: CallSession }>('/api/calls/start', {
+        method: 'POST',
+        body: JSON.stringify({ conversationId, type }),
+      })
+      createdCall = response.call
+      replaceCall(response.call)
+      await connectCall(response.call)
+    } catch (startError) {
+      let cleanupError = ''
+      if (createdCall) {
+        await closeCallRoom(createdCall.id).catch((failure: unknown) => {
+          cleanupError = failure instanceof Error ? failure.message : 'Media cleanup failed.'
+        })
+        try {
+          await apiRequest(`/api/calls/${encodeURIComponent(createdCall.id)}/cancel`, { method: 'POST' })
+        } catch (failure) {
+          cleanupError = [cleanupError, failure instanceof Error ? failure.message : 'The call could not be cancelled.'].filter(Boolean).join(' ')
+        }
+      }
+      setError([startError instanceof Error ? startError.message : 'Unable to start this group call.', cleanupError].filter(Boolean).join(' '))
+    } finally {
+      setBusyId('')
+    }
+  }, [closeCallRoom, connectCall, replaceCall])
+
+  const requestedUserId = searchParams.get('user')
+  const requestedConversationId = searchParams.get('conversation')
+  const requestedType = searchParams.get('type')
+  useEffect(() => {
+    if (!requestedUserId || !['voice', 'video'].includes(requestedType ?? '') || loading) return
+    const requestKey = `${requestedUserId}:${requestedType}`
+    if (requestedCallRef.current === requestKey) return
+    const person = users.find((candidate) => candidate.id === requestedUserId)
+    if (!person) return
+    requestedCallRef.current = requestKey
+    void startCall(person, requestedType as CallSession['type'])
+  }, [loading, requestedType, requestedUserId, startCall, users])
+  useEffect(() => {
+    if (!requestedConversationId || !['voice', 'video'].includes(requestedType ?? '')) return
+    const requestKey = `${requestedConversationId}:${requestedType}`
+    if (requestedCallRef.current === requestKey) return
+    requestedCallRef.current = requestKey
+    void startGroupCall(requestedConversationId, requestedType as CallSession['type'])
+  }, [requestedConversationId, requestedType, startGroupCall])
 
   const callAction = async (call: CallSession, action: 'accept' | 'reject' | 'cancel' | 'end' | 'leave') => {
     setBusyId(call.id)

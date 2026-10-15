@@ -146,7 +146,7 @@ export type MessageRecord = {
   readAt: string | null;
   deletedAt: string | null;
   status: 'SENT' | 'DELIVERED' | 'READ' | 'FAILED' | 'DELETED';
-  contentType?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | 'VOICE' | 'CONTACT' | 'LOCATION';
+  contentType?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | 'VOICE' | 'CONTACT' | 'LOCATION' | 'POLL' | 'EVENT';
   mediaUrl?: string | null;
   metadata?: Record<string, unknown> | null;
   replyToId?: string | null;

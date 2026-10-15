@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Bell,
+  CircleDot,
   Compass,
   House,
   LogOut,
@@ -43,6 +44,8 @@ export function AppShell({ children }: AppShellProps) {
   const location = useLocation()
   const navigate = useNavigate()
   const { user, logout, isLoading } = useAuth()
+  const isMessagingSurface = location.pathname === '/messages' || location.pathname === '/updates'
+  const isCommunicationSurface = isMessagingSurface || location.pathname === '/communities' || location.pathname === '/calls'
   const canAccessAdmin = ['ADMIN', 'SUPER_ADMIN', 'MODERATOR'].includes(user?.role ?? 'USER')
   const navItems = canAccessAdmin
     ? [...sidebarItems, { label: 'Admin', path: '/admin', icon: BriefcaseBusiness }]
@@ -63,8 +66,8 @@ export function AppShell({ children }: AppShellProps) {
 
   return (
     <div className="min-h-screen text-slate-900">
-      <div className="mx-auto flex min-h-screen max-w-[1600px] gap-4 p-3 pb-32 sm:p-4 lg:gap-6 lg:pb-4">
-        <aside className="hidden w-[250px] shrink-0 rounded-[28px] border border-blue-950 bg-gradient-to-b from-[#101d46] via-[#15285d] to-[#1b2862] p-4 text-white shadow-[0_24px_70px_-32px_rgba(18,35,87,.65)] lg:flex lg:flex-col">
+      <div className={cn('mx-auto flex min-h-screen max-w-[1600px] gap-4 p-3 pb-32 sm:p-4 lg:gap-6 lg:pb-4', isMessagingSurface && 'h-[100dvh] min-h-0 max-w-none gap-0 p-0 pb-0 lg:p-0')}>
+        <aside className={cn('hidden w-[250px] shrink-0 rounded-[28px] border border-blue-950 bg-gradient-to-b from-[#101d46] via-[#15285d] to-[#1b2862] p-4 text-white shadow-[0_24px_70px_-32px_rgba(18,35,87,.65)] lg:flex lg:flex-col', isMessagingSurface && 'hidden')}>
           <div className="mb-8 flex items-center gap-3 px-2">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-400 via-blue-500 to-violet-500 text-lg font-black text-white shadow-lg shadow-blue-950/40">
               N
@@ -116,18 +119,36 @@ export function AppShell({ children }: AppShellProps) {
           </div>
         </aside>
 
-        <main className="flex min-w-0 flex-1 flex-col">
-          <div className="min-h-[calc(100vh-2rem)] overflow-hidden rounded-[28px] border border-white/80 bg-white/95 shadow-[0_20px_70px_-42px_rgba(18,35,87,.38)] backdrop-blur">
-            <TopBar currentPath={location.pathname} />
-            <div>{children}</div>
+        <main className={cn('flex min-w-0 flex-1 flex-col', isMessagingSurface && 'h-full min-h-0')}>
+          <div className={cn('min-h-[calc(100vh-2rem)] overflow-hidden rounded-[28px] border border-white/80 bg-white/95 shadow-[0_20px_70px_-42px_rgba(18,35,87,.38)] backdrop-blur', isMessagingSurface && 'h-full min-h-0 rounded-none border-0 shadow-none')}>
+            {!isMessagingSurface ? <TopBar currentPath={location.pathname} /> : null}
+            <div className={isMessagingSurface ? 'h-full min-h-0' : ''}>{children}</div>
           </div>
         </main>
 
       </div>
 
-      <MobileNavigation />
+      {!isCommunicationSurface ? <MobileNavigation /> : null}
+      {!isMessagingSurface && isCommunicationSurface ? <CommunicationNavigation /> : null}
     </div>
   )
+}
+
+function CommunicationNavigation() {
+  const location = useLocation()
+  const items = [
+    { label: 'Chats', path: '/messages', icon: MessageCircleMore },
+    { label: 'Updates', path: '/updates', icon: CircleDot },
+    { label: 'Communities', path: '/communities', icon: UsersRound },
+    { label: 'Calls', path: '/calls', icon: Phone },
+  ]
+
+  return <nav aria-label="NOVAKOKO navigation" className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-100 bg-white/95 px-2 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur lg:hidden">
+    <div className="mx-auto grid max-w-xl grid-cols-4">{items.map(({ label, path, icon: Icon }) => {
+      const active = location.pathname === path
+      return <Link key={path} to={path} aria-current={active ? 'page' : undefined} className={`flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-medium ${active ? 'text-[#078744]' : 'text-slate-500 hover:text-slate-900'}`}><span className={`flex h-7 w-14 items-center justify-center rounded-full ${active ? 'bg-[#e8f5e9]' : ''}`}><Icon className="h-5 w-5" aria-hidden="true" /></span>{label}</Link>
+    })}</div>
+  </nav>
 }
 
 type TopBarProps = {

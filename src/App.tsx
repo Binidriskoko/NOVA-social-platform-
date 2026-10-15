@@ -14,6 +14,7 @@ import { AuthPage } from './pages/AuthPage'
 import { AdminPage } from './pages/AdminPage'
 import { DownloadPage } from './pages/DownloadPage'
 import { AiPage } from './pages/AiPage'
+import { UpdatesPage } from './pages/UpdatesPage'
 
 const LivePage = lazy(() => import('./pages/LivePage').then(({ LivePage: page }) => ({ default: page })))
 const CallsPage = lazy(() => import('./pages/CallsPage').then(({ CallsPage: page }) => ({ default: page })))
@@ -83,6 +84,7 @@ function AppRoutes() {
         <Route path="/create" element={<AppShell><CreatePage /></AppShell>} />
         <Route path="/notifications" element={<AppShell><NotificationsPage /></AppShell>} />
         <Route path="/messages" element={<AppShell><MessagesPage /></AppShell>} />
+        <Route path="/updates" element={<AppShell><UpdatesPage /></AppShell>} />
         <Route path="/live" element={<Suspense fallback={<MediaPageLoading />}><AppShell><LivePage /></AppShell></Suspense>} />
         <Route path="/calls" element={<Suspense fallback={<MediaPageLoading />}><AppShell><CallsPage /></AppShell></Suspense>} />
         <Route path="/ai" element={<AppShell><AiPage /></AppShell>} />

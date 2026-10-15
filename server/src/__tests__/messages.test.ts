@@ -72,4 +72,45 @@ describe('messaging database responses', () => {
       where: expect.objectContaining({ tokenHash: hashSessionToken(token) }),
     }));
   });
+
+  it('enforces group admin permissions through database-backed membership queries', async () => {
+    const tokenFor = (userId: string) => signAccessToken({ sub: userId, email: `${userId}@example.com`, role: 'USER' });
+    const authFor = (userId: string) => ({ Authorization: `Bearer ${tokenFor(userId)}` });
+    const roles: Record<string, string> = { creator: 'OWNER', admin: 'MODERATOR', member: 'MEMBER', newcomer: 'MEMBER' };
+
+    vi.spyOn(prisma.session, 'findFirst').mockResolvedValue({ id: 'database-session' } as never);
+    vi.spyOn(prisma.user, 'findUnique').mockImplementation((args) => {
+      const userId = (args as unknown as { where: { id: string } }).where.id;
+      return Promise.resolve({ id: userId, email: `${userId}@example.com`, name: userId, role: 'USER', status: 'ACTIVE' }) as never;
+    });
+    vi.spyOn(prisma.user, 'findMany').mockImplementation((args) => {
+      const ids = ((args as unknown as { where: { id: { in: string[] } } }).where.id).in;
+      return Promise.resolve(ids.map((id) => ({ id }))) as never;
+    });
+    vi.spyOn(prisma.conversation, 'findUnique').mockResolvedValue({ id: 'database-group', isGroup: true, isChannel: false } as never);
+    vi.spyOn(prisma.conversationParticipant, 'findUnique').mockImplementation((args) => {
+      const userId = (args as unknown as { where: { conversationId_userId: { userId: string } } }).where.conversationId_userId.userId;
+      return Promise.resolve({ id: `participant-${userId}`, conversationId: 'database-group', userId, role: roles[userId] }) as never;
+    });
+    vi.spyOn(prisma.conversationParticipant, 'findMany').mockResolvedValue([] as never);
+    vi.spyOn(prisma.conversationParticipant, 'createMany').mockResolvedValue({ count: 1 } as never);
+    vi.spyOn(prisma.conversationParticipant, 'update').mockImplementation((args) => {
+      const updateArgs = args as unknown as { where: { conversationId_userId: { userId: string } }; data: { role: string } };
+      const userId = updateArgs.where.conversationId_userId.userId;
+      return Promise.resolve({ id: `participant-${userId}`, conversationId: 'database-group', userId, role: updateArgs.data.role }) as never;
+    });
+    vi.spyOn(prisma.block, 'findUnique').mockResolvedValue(null as never);
+
+    const participantsPath = '/api/conversations/database-group/participants';
+    expect((await request(app).post(participantsPath).set(authFor('creator')).send({ participantIds: ['newcomer'] })).status).toBe(201);
+    expect((await request(app).post(participantsPath).set(authFor('admin')).send({ participantIds: ['newcomer'] })).status).toBe(201);
+    expect((await request(app).post(participantsPath).set(authFor('member')).send({ participantIds: ['newcomer'] })).status).toBe(403);
+
+    const rolePath = '/api/conversations/database-group/participants/member';
+    expect((await request(app).patch(rolePath).set(authFor('creator')).send({ role: 'MODERATOR' })).status).toBe(200);
+    expect((await request(app).patch(rolePath).set(authFor('admin')).send({ role: 'MODERATOR' })).status).toBe(200);
+    expect((await request(app).patch(rolePath).set(authFor('member')).send({ role: 'MEMBER' })).status).toBe(403);
+    expect(prisma.conversationParticipant.createMany).toHaveBeenCalledTimes(2);
+    expect(prisma.conversationParticipant.update).toHaveBeenCalledTimes(2);
+  });
 });

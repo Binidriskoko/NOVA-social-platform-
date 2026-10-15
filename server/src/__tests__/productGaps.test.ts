@@ -68,6 +68,7 @@ describe('product area gaps', () => {
     expect((await request(app).post(`/api/conversations/${channelId}/messages`).set('Cookie', moderator.auth).send({ text: 'Unauthorized update' })).status).toBe(403);
     expect((await request(app).post(`/api/conversations/${channelId}/participants`).set('Cookie', owner.auth).send({ participantIds: [guest.user.id] })).status).toBe(201);
     expect((await request(app).patch(`/api/conversations/${channelId}/participants/${moderator.user.id}`).set('Cookie', owner.auth).send({ role: 'MODERATOR' })).status).toBe(200);
+    expect((await request(app).patch(`/api/conversations/${channelId}/participants/${guest.user.id}`).set('Cookie', moderator.auth).send({ role: 'MODERATOR' })).status).toBe(403);
     expect((await request(app).post(`/api/conversations/${channelId}/messages`).set('Cookie', moderator.auth).send({ text: 'Official update' })).status).toBe(201);
     expect((await request(app).delete(`/api/conversations/${channelId}/participants/${guest.user.id}`).set('Cookie', moderator.auth)).status).toBe(200);
   });
@@ -75,26 +76,59 @@ describe('product area gaps', () => {
   it('lets group owners and moderators add new members but prevents direct-chat expansion', async () => {
     const owner = await register('AddGroupOwner');
     const moderator = await register('AddGroupModerator');
+    const member = await register('AddGroupMember');
     const guest = await register('AddGroupGuest');
     const outsider = await register('AddGroupOutsider');
     const created = await request(app).post('/api/conversations').set('Cookie', owner.auth).send({
-      participantIds: [moderator.user.id],
+      participantIds: [moderator.user.id, member.user.id],
       name: 'Small group',
     });
     const groupId = created.body.conversation.id;
 
     expect((await request(app).get('/api/conversations').set('Cookie', owner.auth)).body.conversations.find((entry: { id: string }) => entry.id === groupId).isGroup).toBe(true);
+    expect((await request(app).get(`/api/conversations/${groupId}`).set('Cookie', owner.auth)).body.conversation.participants.find((entry: { userId: string }) => entry.userId === owner.user.id).role).toBe('OWNER');
     expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', outsider.auth).send({ participantIds: [guest.user.id] })).status).toBe(404);
+    expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', member.auth).send({ participantIds: [guest.user.id] })).status).toBe(403);
+    expect((await request(app).patch(`/api/conversations/${groupId}/participants/${moderator.user.id}`).set('Cookie', member.auth).send({ role: 'MODERATOR' })).status).toBe(403);
     expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', owner.auth).send({ participantIds: [guest.user.id, guest.user.id] })).status).toBe(400);
     expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', owner.auth).send({ participantIds: [guest.user.id] })).body.added).toEqual([guest.user.id]);
     expect((await request(app).get('/api/conversations').set('Cookie', guest.auth)).body.conversations.some((entry: { id: string }) => entry.id === groupId)).toBe(true);
 
     const promoted = await request(app).patch(`/api/conversations/${groupId}/participants/${moderator.user.id}`).set('Cookie', owner.auth).send({ role: 'MODERATOR' });
     expect(promoted.status).toBe(200);
+    expect((await request(app).patch(`/api/conversations/${groupId}/participants/${member.user.id}`).set('Cookie', moderator.auth).send({ role: 'MODERATOR' })).status).toBe(200);
     expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', moderator.auth).send({ participantIds: [outsider.user.id] })).body.added).toEqual([outsider.user.id]);
+    expect((await request(app).patch(`/api/conversations/${groupId}/participants/${moderator.user.id}`).set('Cookie', outsider.auth).send({ role: 'MEMBER' })).status).toBe(403);
+    expect((await request(app).patch(`/api/conversations/${groupId}/participants/missing-group-member`).set('Cookie', owner.auth).send({ role: 'MODERATOR' })).status).toBe(404);
 
     const direct = await request(app).post('/api/conversations').set('Cookie', owner.auth).send({ participantId: outsider.user.id });
     expect((await request(app).post(`/api/conversations/${direct.body.conversation.id}/participants`).set('Cookie', owner.auth).send({ participantIds: [guest.user.id] })).status).toBe(400);
+  });
+
+  it('persists poll votes and event responses for conversation members only', async () => {
+    const alice = await register('InteractiveAlice');
+    const bob = await register('InteractiveBob');
+    const outsider = await register('InteractiveOutsider');
+    const conversation = await request(app).post('/api/conversations').set('Cookie', alice.auth).send({ participantId: bob.user.id });
+    const conversationId = conversation.body.conversation.id;
+    const poll = await request(app).post(`/api/conversations/${conversationId}/messages`).set('Cookie', alice.auth).send({
+      contentType: 'POLL',
+      metadata: { question: 'Which day?', options: [{ id: 'sat', text: 'Saturday' }, { id: 'sun', text: 'Sunday' }], votes: {} },
+    });
+    expect(poll.status).toBe(201);
+    expect((await request(app).post(`/api/messages/${poll.body.message.id}/interactive-response`).set('Cookie', bob.auth).send({ optionId: 'missing' })).status).toBe(400);
+    expect((await request(app).post(`/api/messages/${poll.body.message.id}/interactive-response`).set('Cookie', outsider.auth).send({ optionId: 'sat' })).status).toBe(403);
+    const vote = await request(app).post(`/api/messages/${poll.body.message.id}/interactive-response`).set('Cookie', bob.auth).send({ optionId: 'sat' });
+    expect(vote.body.message.metadata.votes[bob.user.id]).toBe('sat');
+
+    const event = await request(app).post(`/api/conversations/${conversationId}/messages`).set('Cookie', alice.auth).send({
+      contentType: 'EVENT',
+      metadata: { title: 'Community meetup', startsAt: '2026-10-20T17:00:00.000Z', responses: {} },
+    });
+    const rsvp = await request(app).post(`/api/messages/${event.body.message.id}/interactive-response`).set('Cookie', bob.auth).send({ response: 'GOING' });
+    expect(rsvp.body.message.metadata.responses[bob.user.id]).toBe('GOING');
+    const history = await request(app).get(`/api/conversations/${conversationId}/messages`).set('Cookie', alice.auth);
+    expect(history.body.messages.map((message: { contentType: string }) => message.contentType)).toContain('EVENT');
   });
 
   it('supports private community channels through invitation-only membership', async () => {

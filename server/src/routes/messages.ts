@@ -31,7 +31,7 @@ function isAllowedMessageMediaUrl(value: string) {
 }
 
 const messageSchema = z.object({
-  contentType: z.enum(['TEXT', 'IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE', 'CONTACT', 'LOCATION']).default('TEXT'),
+  contentType: z.enum(['TEXT', 'IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE', 'CONTACT', 'LOCATION', 'POLL', 'EVENT']).default('TEXT'),
   text: z.string().trim().max(2000).optional(),
   mediaUrl: z.string().trim().max(2000).refine(isAllowedMessageMediaUrl, 'Use an HTTPS URL or an uploaded NOVAKOKO image.').optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
@@ -39,7 +39,24 @@ const messageSchema = z.object({
   status: z.enum(['SENT', 'DELIVERED', 'READ', 'FAILED']).optional(),
 }).refine((payload) => payload.contentType !== 'TEXT' || Boolean(payload.text?.trim()), { message: 'Text messages need content.' })
   .refine((payload) => !['IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE'].includes(payload.contentType) || Boolean(payload.mediaUrl), { message: 'Media messages need a media URL.' })
-  .refine((payload) => !['CONTACT', 'LOCATION'].includes(payload.contentType) || Boolean(payload.metadata), { message: 'Contact and location messages need metadata.' });
+  .refine((payload) => !['CONTACT', 'LOCATION', 'POLL', 'EVENT'].includes(payload.contentType) || Boolean(payload.metadata), { message: 'This message type needs metadata.' })
+  .refine((payload) => payload.contentType !== 'POLL' || (
+    typeof payload.metadata?.question === 'string'
+    && Array.isArray(payload.metadata.options)
+    && payload.metadata.options.length >= 2
+    && payload.metadata.options.length <= 10
+    && payload.metadata.options.every((option) => typeof option === 'object' && option !== null && typeof (option as { id?: unknown }).id === 'string' && typeof (option as { text?: unknown }).text === 'string')
+  ), { message: 'Polls need a question and two to ten options.' })
+  .refine((payload) => payload.contentType !== 'EVENT' || (
+    typeof payload.metadata?.title === 'string'
+    && typeof payload.metadata.startsAt === 'string'
+    && !Number.isNaN(Date.parse(payload.metadata.startsAt))
+  ), { message: 'Events need a title and a valid start time.' });
+
+const interactiveResponseSchema = z.object({
+  optionId: z.string().min(1).optional(),
+  response: z.enum(['GOING', 'MAYBE', 'NOT_GOING']).optional(),
+}).refine((payload) => Boolean(payload.optionId) !== Boolean(payload.response), { message: 'Provide either a poll option or an event response.' });
 
 const messageEditSchema = z.object({ text: z.string().trim().min(1).max(2000) });
 const reactionSchema = z.object({ type: z.string().trim().min(1).max(24) });
@@ -251,7 +268,7 @@ messagesRouter.get('/conversations', requireAuth, async (_req, res) => {
     const conversations = await prisma.conversation.findMany({
       where: { participants: { some: { userId } } },
       include: {
-        participants: { include: { user: { select: { id: true, name: true } } } },
+        participants: { include: { user: { select: { id: true, name: true, profile: { select: { avatarUrl: true } } } } } },
         messages: { orderBy: { createdAt: 'desc' }, take: 1 },
         _count: { select: { messages: { where: { senderId: { not: userId }, readAt: null, deletedAt: null, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] } } } },
       },
@@ -263,6 +280,8 @@ messagesRouter.get('/conversations', requireAuth, async (_req, res) => {
       return {
         id: conversation.id,
         name: conversation.name,
+        isGroup: conversation.isGroup,
+        isChannel: conversation.isChannel,
         updatedAt: conversation.updatedAt,
         lastMessageAt: conversation.lastMessageAt,
         lastMessagePreview: conversation.lastMessagePreview,
@@ -271,7 +290,7 @@ messagesRouter.get('/conversations', requireAuth, async (_req, res) => {
         starredAt: currentParticipant?.starredAt ?? null,
         mutedUntil: currentParticipant?.mutedUntil ?? null,
         unreadCount: conversation._count.messages,
-        participants: conversation.participants.map((participant) => ({ id: participant.id, userId: participant.userId, role: participant.role, user: participant.user })),
+        participants: conversation.participants.map((participant) => ({ id: participant.id, userId: participant.userId, role: participant.role, user: { id: participant.user.id, name: participant.user.name, avatar: participant.user.profile?.avatarUrl ?? '' } })),
         lastMessage: conversation.messages[0] ? messageToPublicShape(conversation.messages[0]) : null,
       };
     }) });
@@ -294,7 +313,7 @@ messagesRouter.get('/conversations', requireAuth, async (_req, res) => {
       unreadCount: socialStore.state.messages.filter((message) => message.conversationId === conversation.id && message.senderId !== userId && !message.readAt && !message.deletedAt && (!message.expiresAt || new Date(message.expiresAt).getTime() > Date.now())).length,
       participants: participants.map((participant) => ({
         ...participant,
-        user: findUserById(participant.userId) ? { id: participant.userId, name: findUserById(participant.userId)!.name } : undefined,
+        user: findUserById(participant.userId) ? { id: participant.userId, name: findUserById(participant.userId)!.name, avatar: socialStore.state.profiles.find((profile) => profile.userId === participant.userId)?.avatarUrl ?? '' } : undefined,
       })),
       lastMessage: socialStore.state.messages
         .filter((message) => message.conversationId === conversation.id)
@@ -316,7 +335,7 @@ messagesRouter.get('/conversations/:id', requireAuth, async (req, res) => {
     const conversation = await prisma.conversation.findUnique({
       where: { id: conversationId },
       include: {
-        participants: { include: { user: { select: { id: true, name: true } } } },
+        participants: { include: { user: { select: { id: true, name: true, profile: { select: { avatarUrl: true } } } } } },
         messages: { where: { OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] }, include: { reactions: true }, orderBy: { createdAt: 'asc' } },
       },
     });
@@ -328,12 +347,13 @@ messagesRouter.get('/conversations/:id', requireAuth, async (req, res) => {
     return res.json({ conversation: {
       id: conversation.id,
       name: conversation.name,
+      isGroup: conversation.isGroup,
       updatedAt: conversation.updatedAt,
       lastMessageAt: conversation.lastMessageAt,
       lastMessagePreview: conversation.lastMessagePreview,
       isChannel: conversation.isChannel,
       disappearingAfterSeconds: conversation.disappearingAfterSeconds,
-      participants: conversation.participants.map((participant) => ({ id: participant.id, userId: participant.userId, role: participant.role, user: participant.user })),
+      participants: conversation.participants.map((participant) => ({ id: participant.id, userId: participant.userId, role: participant.role, user: { id: participant.user.id, name: participant.user.name, avatar: participant.user.profile?.avatarUrl ?? '' } })),
       messages: conversation.messages.filter((message) => !message.deletedAt).map(messageToPublicShape),
     } });
   }
@@ -504,6 +524,37 @@ messagesRouter.post('/conversations/:id/messages', requireAuth, async (req, res)
   emitConversationEvent('message:new', conversationId, { message: messageToPublicShape(created), senderId: userId }, [userId, ...recipients]);
 
   return res.status(201).json({ message: messageToPublicShape(created) });
+});
+
+messagesRouter.post('/messages/:id/interactive-response', requireAuth, async (req, res) => {
+  const messageId = String(req.params.id);
+  const payload = interactiveResponseSchema.parse(req.body ?? {});
+  const dbAvailable = await isDatabaseAvailable();
+  const message = dbAvailable
+    ? await prisma.message.findUnique({ where: { id: messageId } })
+    : socialStore.state.messages.find((entry) => entry.id === messageId);
+  if (!message || message.deletedAt) return res.status(404).json({ message: 'Message not found.' });
+  if (!(await canViewConversation(message.conversationId, req.user!.id))) return res.status(403).json({ message: 'You do not have access to this message.' });
+
+  const metadata = (message.metadata ?? {}) as Record<string, unknown>;
+  let updatedMetadata: Record<string, unknown>;
+  if (message.contentType === 'POLL' && payload.optionId) {
+    const options = Array.isArray(metadata.options) ? metadata.options as Array<{ id?: unknown }> : [];
+    if (!options.some((option) => option.id === payload.optionId)) return res.status(400).json({ message: 'Choose an option from this poll.' });
+    const votes = metadata.votes && typeof metadata.votes === 'object' ? metadata.votes as Record<string, unknown> : {};
+    updatedMetadata = { ...metadata, votes: { ...votes, [req.user!.id]: payload.optionId } };
+  } else if (message.contentType === 'EVENT' && payload.response) {
+    const responses = metadata.responses && typeof metadata.responses === 'object' ? metadata.responses as Record<string, unknown> : {};
+    updatedMetadata = { ...metadata, responses: { ...responses, [req.user!.id]: payload.response } };
+  } else {
+    return res.status(400).json({ message: 'This message does not accept that response.' });
+  }
+
+  const updated = dbAvailable
+    ? await prisma.message.update({ where: { id: messageId }, data: { metadata: updatedMetadata as Prisma.InputJsonValue } })
+    : Object.assign(message, { metadata: updatedMetadata, updatedAt: new Date().toISOString() });
+  emitConversationEvent('message:new', message.conversationId, { message: messageToPublicShape(updated) }, await listConversationParticipantIds(message.conversationId));
+  return res.json({ message: messageToPublicShape(updated) });
 });
 
 messagesRouter.get('/conversations/:id/messages', requireAuth, async (req, res) => {
@@ -935,14 +986,19 @@ messagesRouter.patch('/conversations/:id/participants/:userId', requireAuth, asy
   const targetId = String(req.params.userId);
   const { role } = roleSchema.parse(req.body ?? {});
   const dbAvailable = await isDatabaseAvailable();
+  const conversation = dbAvailable
+    ? await prisma.conversation.findUnique({ where: { id: conversationId }, select: { isGroup: true, isChannel: true } })
+    : socialStore.state.conversations.find((entry) => entry.id === conversationId);
   const actor = dbAvailable
     ? await prisma.conversationParticipant.findUnique({ where: { conversationId_userId: { conversationId, userId: req.user!.id } }, select: { role: true } })
     : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === req.user!.id);
   const target = dbAvailable
     ? await prisma.conversationParticipant.findUnique({ where: { conversationId_userId: { conversationId, userId: targetId } } })
     : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === targetId);
-  if (!actor || !target) return res.status(404).json({ message: 'Conversation member not found.' });
-  if (actor.role !== 'OWNER') return res.status(403).json({ message: 'Only the group owner can change moderator roles.' });
+  if (!conversation || !actor || !target) return res.status(404).json({ message: 'Conversation member not found.' });
+  if (!conversation.isGroup && !conversation.isChannel) return res.status(400).json({ message: 'Roles can only be changed in group conversations.' });
+  const canManageRoles = conversation.isChannel ? actor.role === 'OWNER' : actor.role === 'OWNER' || actor.role === 'MODERATOR';
+  if (!canManageRoles) return res.status(403).json({ message: conversation.isChannel ? 'Only channel owners can change member roles.' : 'Only group admins can change member roles.' });
   if (target.role === 'OWNER') return res.status(409).json({ message: 'The owner role cannot be changed.' });
   if (dbAvailable) return res.json({ participant: await prisma.conversationParticipant.update({ where: { conversationId_userId: { conversationId, userId: targetId } }, data: { role } }) });
   target.role = role;

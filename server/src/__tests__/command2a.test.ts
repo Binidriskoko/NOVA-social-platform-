@@ -148,7 +148,7 @@ describe('command 2a foundation', () => {
     expect(unauthorized.status).toBe(404);
   });
 
-  it('does not create or report calls as connected without a media and signaling service', async () => {
+  it('creates configured LiveKit calls and still applies existing block controls', async () => {
     await request(app).post('/api/auth/register').send({
       name: 'Alice',
       email: 'alice@example.com',
@@ -174,7 +174,7 @@ describe('command 2a foundation', () => {
       .send({ targetUserId: bobUser.id, type: 'voice' });
 
     expect(started.status).toBe(201);
-    expect(started.body.call.provider).toBe('webrtc-peer');
+    expect(started.body.call.provider).toBe('livekit');
 
     await request(app)
       .post(`/api/users/${bobUser.id}/block`)
@@ -189,7 +189,7 @@ describe('command 2a foundation', () => {
     expect((await request(app).get('/api/calls/history').set('Cookie', getCookieHeader(aliceLogin))).body.calls).toHaveLength(1);
   });
 
-  it('creates a live session with genuine peer-to-peer media configured', async () => {
+  it('creates LiveKit live sessions in the existing paused lifecycle state', async () => {
     await request(app).post('/api/auth/register').send({
       name: 'Alice',
       email: 'alice@example.com',
@@ -213,7 +213,8 @@ describe('command 2a foundation', () => {
       .send({ title: 'Launch stream', visibility: 'public' });
 
     expect(live.status).toBe(201);
-    expect(live.body.live.provider).toBe('webrtc-peer');
+    expect(live.body.live.provider).toBe('livekit');
+    expect(live.body.live.status).toBe('paused');
     expect((await request(app).get('/api/live').set('Cookie', getCookieHeader(aliceLogin))).body.lives).toHaveLength(1);
   });
 

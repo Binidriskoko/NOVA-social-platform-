@@ -13,6 +13,7 @@ Copy `server/.env.example` to `server/.env` and set:
 - `JWT_EXPIRES_IN`, `COOKIE_NAME`, and `COOKIE_SAME_SITE`; the production default is `none` for the cross-site Vercel/Render deployment, and secure cookies require HTTPS. Use `lax` or `strict` only when the web and API are same-site.
 - `CORS_ORIGIN` to one or more exact HTTPS web origins separated by commas; wildcards are rejected in production
 - `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS`, and `AUTH_RATE_LIMIT_MAX`
+- `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` together to enable calls and broadcasts; keep the API secret only in Render's secret environment
 
 Production browser API requests use the same-origin `/api` path and are forwarded to Render by Vercel's rewrite. `VITE_API_BASE_URL` is only used by non-production builds; without it, local development falls back to the production API URL rather than localhost. The root `.env.example` contains only the safe, blank variable name.
 
@@ -76,17 +77,9 @@ The included `docker-compose.production.yml` builds the API and Nginx web servic
 
 Point the web domain at the Nginx service and the API domain at the Express service. Set `CORS_ORIGIN` to the web origin exactly, including scheme and port where applicable. Keep HTTPS termination in front of both services. Messaging realtime currently uses authenticated Server-Sent Events at `/api/realtime`; the proxy must allow long-lived connections, forward cookies, disable response buffering for that route, and permit keep-alive connections.
 
-Calls and live video remain deliberately unavailable in this deployment. The API returns HTTP 503 rather than creating calls or streams that cannot carry media; the UI does not claim a connection. Vercel static hosting and the existing Render HTTP API do not host an SFU or provide a TURN relay.
+Calls and live broadcasts use the integrated LiveKit client and server SDK. LiveKit itself must run as a separately reachable media service; Vercel static hosting and the existing Render HTTP API do not host an SFU. Configure its public TLS WebSocket URL in `LIVEKIT_URL` and its matching API key and secret in Render. The API issues 10-minute participant tokens after checking call/session membership and lifecycle state; the browser receives only the URL and signed token. LiveKit handles ICE/TURN and its media-server configuration must allow the required UDP/TCP media traffic.
 
-To enable these features without a paid hosted media provider:
-
-1. Operate an open-source WebRTC media server such as LiveKit on infrastructure you control. It must have a publicly reachable address, a TLS DNS name, and the UDP/TCP ports required by the chosen server version. Vercel and the existing Render web service are not substitutes for this separate media server. Software can be free; hosting, bandwidth, and a public IP may not be.
-2. Configure the media server's ICE/TURN relay and TLS using its official deployment instructions. A STUN-only configuration is not reliable for users behind restrictive NATs. Do not use an unauthenticated public TURN relay or put TURN credentials in the frontend.
-3. Integrate the web client with the server, and add authenticated API endpoints that authorize call/live participants and issue short-lived media tokens. Keep the server signing key only in Render's secret environment; expose only the public media-server URL to the browser.
-4. Replace the process-local call/live state with persistent, authorized session/history storage and signaling that works across API instances. The current Prisma schema has no call/live session models, and the existing event hub is process-local; merely setting provider environment variables will not enable these features.
-5. Verify real publication and remote track receipt before reporting a stream as live or a call as connected. Test camera/microphone denial, rejected/missed calls, termination, relay-only networks, and API/media-server restarts before enabling the controls.
-
-No media-server or TURN configuration is present, and the current application has not yet implemented that provider adapter. Do not manually deploy or advertise calls/live as operational until the adapter and external service are both configured and verified.
+Call/live session history and the realtime event hub are still process-local. Run one API instance for these features; API restarts lose these sessions and multi-instance deployment needs shared storage and cross-instance events. This integration does not provision or deploy a LiveKit service. Before production use, configure the Render variables and LiveKit service, then verify microphone/camera denial, incoming/rejected/missed calls, termination, viewer join/leave, network interruption, and media-server/API restarts against the real service.
 
 Registration is password-based and does not require email verification, phone verification, an OTP, or a paid provider. Users may choose a username and password and optionally add an email address or phone number; login accepts the username, email address, or phone number with that password. Passwords are stored as bcrypt hashes, and successful registration/login establish revocable, server-tracked sessions in secure HTTP-only cookies. Optional MFA can be introduced later through the existing `MfaMethod` model without making verification a prerequisite for account creation.
 

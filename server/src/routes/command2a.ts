@@ -1,14 +1,13 @@
 import { Router, type Request, type Response } from 'express';
-import { createHmac } from 'node:crypto';
+import { TrackSource } from 'livekit-server-sdk';
 import { z } from 'zod';
 import { requireAuth, requireActiveAccountIfAuthenticated } from '../middleware/auth.js';
-import env from '../config/env.js';
 import { createCallSession, createLiveSession, createNotification, getCallSession, getLiveSession, getNotificationPreferences, listCallHistory, listLiveSessions, markAllNotificationsRead, markNotificationRead, setNotificationPreferences, setPresence, setTypingState, updateCallSession, updateLiveSession } from '../lib/platform.js';
 import { socialStore } from '../lib/socialStore.js';
 import { findUserById } from '../lib/fallbackStore.js';
 import { prisma, isDatabaseAvailable } from '../lib/prisma.js';
 import { reviewContentForSafety } from '../lib/moderation.js';
-import { realtimeHub } from '../lib/realtime.js';
+import { callRoomName, createLiveKitToken, getLiveKitParticipants, isLiveKitConfigured, liveKitUrl, liveRoomName } from '../lib/livekit.js';
 
 const command2aRouter = Router();
 command2aRouter.use(requireActiveAccountIfAuthenticated);
@@ -38,26 +37,6 @@ const callSchema = z.object({
   message: 'Choose at least one call participant or a group conversation.',
 });
 const callControlSchema = z.object({ muted: z.boolean().optional(), cameraOn: z.boolean().optional(), speakerOn: z.boolean().optional() });
-const rtcSignalSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.enum(['offer', 'answer']), sdp: z.string().min(1).max(65536) }),
-  z.object({
-    type: z.literal('candidate'),
-    candidate: z.string().max(4096),
-    sdpMid: z.string().max(256).nullable().optional(),
-    sdpMLineIndex: z.number().int().min(0).nullable().optional(),
-    usernameFragment: z.string().max(256).optional(),
-  }),
-]);
-const callSignalSchema = z.object({ to: z.string().min(1), signal: rtcSignalSchema });
-const liveSignalSchema = z.object({
-  to: z.string().min(1),
-  signal: z.discriminatedUnion('type', [
-    z.object({ type: z.literal('join') }),
-    z.object({ type: z.literal('leave') }),
-    ...rtcSignalSchema.options,
-  ]),
-});
-
 const liveCreateSchema = z.object({
   title: z.string().trim().min(1).max(120),
   description: z.string().trim().max(1000).optional(),
@@ -167,21 +146,8 @@ command2aRouter.post('/conversations/:id/typing', requireAuth, async (req, res) 
   return res.json({ typing });
 });
 
-command2aRouter.get('/rtc/config', requireAuth, (req, res) => {
-  const iceServers: Array<{ urls: string[]; username?: string; credential?: string; credentialType?: 'password' }> = [
-    { urls: ['stun:stun.l.google.com:19302'] },
-  ];
-  const turnUrls = env.TURN_URLS.split(',').map((url) => url.trim()).filter(Boolean);
-  if (turnUrls.length && env.TURN_SHARED_SECRET) {
-    const expiresAt = Math.floor(Date.now() / 1000) + env.TURN_CREDENTIAL_TTL_SECONDS;
-    const username = `${expiresAt}:${env.TURN_USERNAME_PREFIX}:${req.user!.id}`;
-    const credential = createHmac('sha1', env.TURN_SHARED_SECRET).update(username).digest('base64');
-    iceServers.push({ urls: turnUrls, username, credential, credentialType: 'password' });
-  }
-  return res.json({ iceServers, transport: 'WebRTC peer-to-peer', encrypted: true });
-});
-
 command2aRouter.post('/calls/start', requireAuth, async (req, res) => {
+  if (!isLiveKitConfigured()) return res.status(503).json({ message: 'Calls are unavailable because LiveKit is not configured.' });
   const payload = callSchema.parse(req.body ?? {});
   const userId = req.user!.id;
   let targetUserIds = payload.targetUserIds ?? (payload.targetUserId ? [payload.targetUserId] : []);
@@ -215,7 +181,7 @@ command2aRouter.post('/calls/start', requireAuth, async (req, res) => {
   }
 
   const call = createCallSession(userId, targetUserIds, payload.type);
-  return res.status(201).json({ call, message: 'Call started. Media will connect directly between participants.' });
+  return res.status(201).json({ call, message: 'Call started. Connecting to LiveKit.' });
 });
 
 command2aRouter.get('/calls/history', requireAuth, async (req, res) => {
@@ -236,29 +202,29 @@ command2aRouter.get('/calls/:id', requireAuth, async (req, res) => {
   return res.json({ call });
 });
 
-command2aRouter.post('/calls/:id/signaling', requireAuth, async (req, res) => {
+command2aRouter.post('/calls/:id/token', requireAuth, async (req, res) => {
   const call = getCallSession(String(req.params.id));
   if (!call) return res.status(404).json({ message: 'Call not found.' });
   const userId = req.user!.id;
   if (!isCallParticipant(call, userId)) return res.status(403).json({ message: 'You do not have access to this call.' });
-  const payload = callSignalSchema.parse(req.body ?? {});
-  const target = call.participants.find((participant) => participant.userId === payload.to);
-  if (!target || target.userId === userId || target.status === 'left') {
-    return res.status(403).json({ message: 'Signaling target is not an active call participant.' });
+  if (!isLiveKitConfigured()) return res.status(503).json({ message: 'Calls are unavailable because LiveKit is not configured.' });
+  if (!['ringing', 'outgoing', 'connected'].includes(call.status)) return res.status(409).json({ message: 'This call is no longer active.' });
+  const participant = call.participants.find((entry) => entry.userId === userId)!;
+  for (const other of call.participants) {
+    if (other.userId !== userId && other.status !== 'left' && await isBlocked(userId, other.userId)) {
+      return res.status(403).json({ message: 'Blocked users cannot join this call.' });
+    }
   }
-  if (call.status === 'ended' || call.status === 'cancelled' || call.status === 'rejected') {
-    return res.status(409).json({ message: 'This call is no longer active.' });
-  }
-  if (payload.signal.type === 'offer' && userId !== call.callerId) return res.status(403).json({ message: 'Only the caller may initiate a call offer.' });
-  if (payload.signal.type === 'answer' && userId === call.callerId) return res.status(403).json({ message: 'The caller cannot answer their own offer.' });
-  realtimeHub.emit('call:signal', {
-    callId: call.id,
-    from: userId,
-    to: payload.to,
-    signal: payload.signal,
-    allowedUserIds: [payload.to],
-  });
-  return res.status(202).json({ delivered: true });
+  const mayJoin = userId === call.callerId
+    ? participant.status !== 'left'
+    : participant.status === 'accepted' || participant.status === 'connected';
+  if (!mayJoin) return res.status(403).json({ message: 'Accept the incoming call before joining its media room.' });
+  const room = callRoomName(call.id);
+  const canPublishSources = call.type === 'video'
+    ? [TrackSource.MICROPHONE, TrackSource.CAMERA]
+    : [TrackSource.MICROPHONE];
+  const token = await createLiveKitToken({ identity: userId, name: req.user!.name, room, canPublish: true, canPublishSources });
+  return res.set('Cache-Control', 'no-store').json({ token, url: liveKitUrl(), room });
 });
 
 command2aRouter.post('/calls/:id/connected', requireAuth, async (req, res) => {
@@ -266,10 +232,36 @@ command2aRouter.post('/calls/:id/connected', requireAuth, async (req, res) => {
   if (!call) return res.status(404).json({ message: 'Call not found.' });
   const userId = req.user!.id;
   if (!isCallParticipant(call, userId)) return res.status(403).json({ message: 'You do not have access to this call.' });
-  if (call.status === 'ended' || call.status === 'cancelled' || call.status === 'rejected') return res.status(409).json({ message: 'This call is no longer active.' });
-  const participants = call.participants.map((participant) => participant.userId === userId ? { ...participant, status: 'connected' as const } : participant);
-  const hasConnectedPeer = participants.some((participant) => participant.userId !== userId && participant.status === 'connected');
-  const next = updateCallSession(call.id, hasConnectedPeer ? { status: 'connected' } : {}, [{ userId, status: 'connected' }]);
+  if (['ended', 'cancelled', 'rejected', 'missed'].includes(call.status)) return res.status(409).json({ message: 'This call is no longer active.' });
+  if (call.participants.find((participant) => participant.userId === userId)?.status === 'left') {
+    return res.status(403).json({ message: 'You have left this call.' });
+  }
+  let roomParticipants: Awaited<ReturnType<typeof getLiveKitParticipants>>;
+  try {
+    roomParticipants = await getLiveKitParticipants(callRoomName(call.id));
+  } catch {
+    return res.status(503).json({ message: 'LiveKit could not verify the call media connection.' });
+  }
+  const connectedUserIds = new Set(roomParticipants.map((participant) => participant.identity));
+  const requiredSources = call.type === 'video'
+    ? [TrackSource.MICROPHONE, TrackSource.CAMERA]
+    : [TrackSource.MICROPHONE];
+  const connectedParticipantIds = call.participants
+    .filter((participant) => participant.status !== 'left' && connectedUserIds.has(participant.userId))
+    .filter((participant) => {
+      const roomParticipant = roomParticipants.find((entry) => entry.identity === participant.userId);
+      const publishedSources = new Set(roomParticipant?.tracks.filter((track) => !track.muted).map((track) => track.source) ?? []);
+      return requiredSources.every((source) => publishedSources.has(source));
+    })
+    .map((participant) => participant.userId);
+  if (!connectedParticipantIds.includes(userId)) {
+    return res.status(409).json({ message: 'Your LiveKit media has not connected to this call.' });
+  }
+  if (connectedParticipantIds.length < 2) {
+    return res.status(409).json({ message: 'A second call participant has not connected to LiveKit yet.' });
+  }
+  const participantPatch = connectedParticipantIds.map((connectedUserId) => ({ userId: connectedUserId, status: 'connected' as const }));
+  const next = updateCallSession(call.id, { status: 'connected' }, participantPatch);
   return res.json({ call: next });
 });
 
@@ -282,10 +274,13 @@ command2aRouter.post('/calls/:id/accept', requireAuth, async (req, res) => {
     return res.status(403).json({ message: 'You do not have access to this call.' });
   }
   if (!call.providerConfigured) {
-    return res.status(503).json({ message: 'This call cannot connect because real-time media and signaling are not configured.' });
+    return res.status(503).json({ message: 'This call cannot connect because LiveKit is not configured.' });
   }
 
   if (call.status !== 'ringing') return res.status(409).json({ message: 'This call is no longer waiting for an answer.' });
+  if (call.callerId === req.user!.id || call.participants.find((participant) => participant.userId === req.user!.id)?.status !== 'pending') {
+    return res.status(409).json({ message: 'Only a pending invitee can accept this call.' });
+  }
   const next = updateCallSession(call.id, {}, [{ userId: req.user!.id, status: 'accepted' }]);
   return res.json({ call: next, message: 'Call accepted. Establishing the encrypted media connection.' });
 });
@@ -297,6 +292,9 @@ command2aRouter.post('/calls/:id/reject', requireAuth, async (req, res) => {
   }
   if (!isCallParticipant(call, req.user!.id)) {
     return res.status(403).json({ message: 'You do not have access to this call.' });
+  }
+  if (call.callerId === req.user!.id || call.participants.find((participant) => participant.userId === req.user!.id)?.status !== 'pending') {
+    return res.status(409).json({ message: 'Only a pending invitee can decline this call.' });
   }
   const allTargetsRejected = call.participants.filter((participant) => participant.userId !== call.callerId)
     .every((participant) => participant.userId === req.user!.id || participant.status === 'left');
@@ -378,7 +376,7 @@ command2aRouter.post('/calls/:id/speaker', requireAuth, async (req, res) => {
 command2aRouter.post('/live/create', requireAuth, async (req, res) => {
   const payload = liveCreateSchema.parse(req.body ?? {});
   const live = createLiveSession(req.user!.id, payload);
-  return res.status(201).json({ live, message: 'Live session created. Start broadcasting to publish encrypted peer-to-peer video.' });
+  return res.status(201).json({ live, message: 'Live session created. Start broadcasting to publish through LiveKit.' });
 });
 
 command2aRouter.get('/live', requireAuth, async (req, res) => {
@@ -401,31 +399,48 @@ command2aRouter.post('/live/:id/start', requireAuth, async (req, res) => {
   const live = getLiveSession(String(req.params.id));
   if (!live) return res.status(404).json({ message: 'Live session not found.' });
   if (live.hostId !== req.user!.id) return res.status(403).json({ message: 'Only the host can start this live session.' });
+  if (!isLiveKitConfigured()) return res.status(503).json({ message: 'Live broadcasts are unavailable because LiveKit is not configured.' });
+  if (live.status !== 'paused') return res.status(409).json({ message: 'This live session cannot be started in its current state.' });
+  let host = null;
+  try {
+    const participants = await getLiveKitParticipants(liveRoomName(live.id));
+    host = participants.find((participant) => participant.identity === live.hostId);
+  } catch {
+    return res.status(503).json({ message: 'LiveKit could not verify the host broadcast.' });
+  }
+  const publishedSources = new Set(host?.tracks.filter((track) => !track.muted).map((track) => track.source) ?? []);
+  if (!publishedSources.has(TrackSource.CAMERA) || !publishedSources.has(TrackSource.MICROPHONE)) {
+    return res.status(409).json({ message: 'The host camera and microphone must be published before starting the live session.' });
+  }
   const next = updateLiveSession(live.id, (session) => ({ ...session, status: 'live', viewerCount: Math.max(0, session.viewerCount) }));
   return res.json({ live: next, message: 'Live session started.' });
 });
 
-command2aRouter.post('/live/:id/signaling', requireAuth, async (req, res) => {
+command2aRouter.post('/live/:id/token', requireAuth, async (req, res) => {
   const live = getLiveSession(String(req.params.id));
   if (!live) return res.status(404).json({ message: 'Live session not found.' });
-  if (live.status !== 'live') return res.status(409).json({ message: 'This live stream is not running.' });
+  if (!isLiveKitConfigured()) return res.status(503).json({ message: 'Live broadcasts are unavailable because LiveKit is not configured.' });
   const userId = req.user!.id;
-  const payload = liveSignalSchema.parse(req.body ?? {});
-  const viewer = live.viewers.find((entry) => entry.userId === userId);
-  const canSendToViewer = live.hostId === userId && live.viewers.some((entry) => entry.userId === payload.to);
-  const viewerCanSignalHost = viewer && payload.to === live.hostId;
-  if (!canSendToViewer && !viewerCanSignalHost) return res.status(403).json({ message: 'Signaling is restricted to the host and joined viewers.' });
-  if (canSendToViewer && ['join', 'leave', 'answer'].includes(payload.signal.type)) return res.status(403).json({ message: 'The host may only send offers and ICE candidates to viewers.' });
-  if (viewerCanSignalHost && payload.signal.type === 'offer') return res.status(403).json({ message: 'Viewers cannot initiate live media offers.' });
-  if (await isBlocked(userId, payload.to)) return res.status(403).json({ message: 'Blocked users cannot exchange live media signals.' });
-  realtimeHub.emit('live:signal', {
-    liveId: live.id,
-    from: userId,
-    to: payload.to,
-    signal: payload.signal,
-    allowedUserIds: [payload.to],
+  const isHost = live.hostId === userId;
+  if (isHost) {
+    if (live.status !== 'paused' && live.status !== 'live') return res.status(409).json({ message: 'This live session is no longer active.' });
+  } else {
+    const viewer = live.viewers.find((entry) => entry.userId === userId && !entry.isBlocked);
+    if (live.status !== 'live' || !viewer) return res.status(403).json({ message: 'Join this live session before requesting media access.' });
+    if (live.visibility === 'private' && !canManageLive(live, userId)) {
+      return res.status(403).json({ message: 'This live session is private.' });
+    }
+    if (await isBlocked(userId, live.hostId)) return res.status(403).json({ message: 'You cannot join this live session.' });
+  }
+  const room = liveRoomName(live.id);
+  const token = await createLiveKitToken({
+    identity: userId,
+    name: req.user!.name,
+    room,
+    canPublish: isHost,
+    ...(isHost ? { canPublishSources: [TrackSource.MICROPHONE, TrackSource.CAMERA] } : {}),
   });
-  return res.status(202).json({ delivered: true });
+  return res.set('Cache-Control', 'no-store').json({ token, url: liveKitUrl(), room, role: isHost ? 'host' : 'viewer' });
 });
 
 command2aRouter.post('/live/:id/end', requireAuth, async (req, res) => {

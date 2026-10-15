@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { TokenVerifier } from 'livekit-server-sdk';
 import { app } from '../app.js';
 import { fallbackStore } from '../lib/fallbackStore.js';
 import { socialStore } from '../lib/socialStore.js';
-import { clearCommand2AStores } from '../lib/platform.js';
+import { clearCommand2AStores, updateLiveSession } from '../lib/platform.js';
 
 function cookie(response: { headers: Record<string, string | string[] | undefined> }) {
   const value = response.headers['set-cookie'];
@@ -110,35 +111,78 @@ describe('product area gaps', () => {
     expect((await request(app).delete(`/api/communities/${created.body.community.id}/members/${member.user.id}`).set('Cookie', owner.auth)).status).toBe(200);
   });
 
-  it('creates an authenticated WebRTC call and restricts its signaling to call participants', async () => {
+  it('issues LiveKit call tokens only to eligible participants and confirms real room membership', async () => {
     const caller = await register('CallCaller');
     const one = await register('CallOne');
     const outsider = await register('CallOutsider');
     const started = await request(app).post('/api/calls/start').set('Cookie', caller.auth).send({ targetUserId: one.user.id, type: 'video' });
     expect(started.status).toBe(201);
     expect(started.body.call.providerConfigured).toBe(true);
+    expect(started.body.call.provider).toBe('livekit');
     expect(started.body.call.status).toBe('ringing');
     expect(started.body.call.participants.map((participant: { userId: string }) => participant.userId)).toContain(one.user.id);
-    const signal = { type: 'offer', sdp: 'v=0\\r\\n' };
-    expect((await request(app).post(`/api/calls/${started.body.call.id}/signaling`).set('Cookie', outsider.auth).send({ to: one.user.id, signal })).status).toBe(403);
-    expect((await request(app).post(`/api/calls/${started.body.call.id}/signaling`).set('Cookie', caller.auth).send({ to: one.user.id, signal })).status).toBe(202);
+    const tokenPath = `/api/calls/${started.body.call.id}/token`;
+    expect((await request(app).post(tokenPath).set('Cookie', outsider.auth)).status).toBe(403);
+    expect((await request(app).post(tokenPath).set('Cookie', one.auth)).status).toBe(403);
+    const callerToken = await request(app).post(tokenPath).set('Cookie', caller.auth);
+    expect(callerToken.status).toBe(200);
+    expect(callerToken.headers['cache-control']).toBe('no-store');
+    const callerClaims = await new TokenVerifier('test-livekit-key', 'test-livekit-secret-that-is-only-used-in-tests').verify(callerToken.body.token);
+    expect(callerClaims.video).toMatchObject({
+      roomJoin: true,
+      room: `nova-call-${started.body.call.id}`,
+      canPublish: true,
+      canPublishSources: ['microphone', 'camera'],
+      canSubscribe: true,
+    });
+
     const accepted = await request(app).post(`/api/calls/${started.body.call.id}/accept`).set('Cookie', one.auth);
     expect(accepted.body.call.status).toBe('ringing');
-    expect((await request(app).post(`/api/calls/${started.body.call.id}/connected`).set('Cookie', one.auth)).body.call.status).toBe('ringing');
-    expect((await request(app).post(`/api/calls/${started.body.call.id}/connected`).set('Cookie', caller.auth)).body.call.status).toBe('connected');
+    const targetToken = await request(app).post(tokenPath).set('Cookie', one.auth);
+    expect(targetToken.status).toBe(200);
+    expect((await new TokenVerifier('test-livekit-key', 'test-livekit-secret-that-is-only-used-in-tests').verify(targetToken.body.token)).video)
+      .toMatchObject({ roomJoin: true, room: `nova-call-${started.body.call.id}`, canPublish: true, canSubscribe: true });
+    const falseConnection = await request(app).post(`/api/calls/${started.body.call.id}/connected`).set('Cookie', caller.auth);
+    expect(falseConnection.status).toBe(503);
+    expect((await request(app).get('/api/calls/history').set('Cookie', caller.auth)).body.calls[0].status).toBe('ringing');
   });
 
-  it('creates real browser-to-browser live sessions and authorizes viewer signaling', async () => {
+  it('grants publishers only to live hosts and subscribe-only access to joined viewers', async () => {
     const host = await register('LiveHost');
     const viewer = await register('LiveGuest');
+    const outsider = await register('LiveOutsider');
     const created = await request(app).post('/api/live/create').set('Cookie', host.auth).send({ title: 'Community stream' });
     expect(created.status).toBe(201);
     expect(created.body.live.providerConfigured).toBe(true);
-    expect((await request(app).post(`/api/live/${created.body.live.id}/start`).set('Cookie', host.auth)).status).toBe(200);
-    const joined = await request(app).post(`/api/live/${created.body.live.id}/viewers/join`).set('Cookie', viewer.auth);
-    expect(joined.status).toBe(201);
-    expect((await request(app).post(`/api/live/${created.body.live.id}/signaling`).set('Cookie', viewer.auth).send({ to: host.user.id, signal: { type: 'join' } })).status).toBe(202);
-    expect((await request(app).post(`/api/live/${created.body.live.id}/signaling`).set('Cookie', viewer.auth).send({ to: host.user.id, signal: { type: 'offer', sdp: 'v=0\\r\\n' } })).status).toBe(403);
-    expect((await request(app).post(`/api/live/${created.body.live.id}/signaling`).set('Cookie', host.auth).send({ to: viewer.user.id, signal: { type: 'offer', sdp: 'v=0\\r\\n' } })).status).toBe(202);
+    expect(created.body.live.provider).toBe('livekit');
+    const liveId = created.body.live.id;
+    const tokenPath = `/api/live/${liveId}/token`;
+    const hostToken = await request(app).post(tokenPath).set('Cookie', host.auth);
+    expect(hostToken.status).toBe(200);
+    expect((await new TokenVerifier('test-livekit-key', 'test-livekit-secret-that-is-only-used-in-tests').verify(hostToken.body.token)).video)
+      .toMatchObject({
+        roomJoin: true,
+        room: `nova-live-${liveId}`,
+        canPublish: true,
+        canPublishSources: ['microphone', 'camera'],
+        canSubscribe: true,
+      });
+    expect((await request(app).post(tokenPath).set('Cookie', viewer.auth)).status).toBe(403);
+
+    const failedStart = await request(app).post(`/api/live/${liveId}/start`).set('Cookie', host.auth);
+    expect(failedStart.status).toBe(503);
+    expect((await request(app).get('/api/live').set('Cookie', host.auth)).body.lives[0].status).toBe('paused');
+
+    updateLiveSession(liveId, (current) => ({
+      ...current,
+      status: 'live',
+      viewers: [{ userId: viewer.user.id, isMuted: false, isBlocked: false, joinedAt: new Date().toISOString() }],
+      viewerCount: 1,
+    }));
+    const viewerToken = await request(app).post(tokenPath).set('Cookie', viewer.auth);
+    expect(viewerToken.status).toBe(200);
+    expect((await new TokenVerifier('test-livekit-key', 'test-livekit-secret-that-is-only-used-in-tests').verify(viewerToken.body.token)).video)
+      .toMatchObject({ roomJoin: true, room: `nova-live-${liveId}`, canPublish: false, canSubscribe: true });
+    expect((await request(app).post(tokenPath).set('Cookie', outsider.auth)).status).toBe(403);
   });
 });

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Phone, Search, Video } from 'lucide-react'
+import { Room, RoomEvent, Track, type RemoteTrack } from 'livekit-client'
 import { Button } from '../components/ui/Button'
 import { useAuth } from '../context/AuthContext'
 import { apiRequest } from '../lib/api'
@@ -18,8 +19,23 @@ type CallSession = {
   createdAt: string
 }
 type DirectoryUser = { id: string; name: string; handle: string }
-type CallSignal = { type: 'offer' | 'answer'; sdp: string } | ({ type: 'candidate' } & RTCIceCandidateInit)
-type RemoteMedia = { key: string; userId: string; stream: MediaStream }
+type RemoteMedia = { key: string; userId: string; track: RemoteTrack }
+
+function AttachedTrack({ track, muted = false, className }: { track: Track; muted?: boolean; className: string }) {
+  const elementRef = useRef<HTMLMediaElement | null>(null)
+
+  useEffect(() => {
+    const element = elementRef.current
+    if (!element) return
+    track.attach(element)
+    return () => { track.detach(element) }
+  }, [track])
+
+  if (track.kind === Track.Kind.Video) {
+    return <video ref={(element) => { elementRef.current = element }} autoPlay muted={muted} playsInline className={className} />
+  }
+  return <audio ref={(element) => { elementRef.current = element }} autoPlay className={className} />
+}
 
 export function CallsPage() {
   const { user } = useAuth()
@@ -30,207 +46,205 @@ export function CallsPage() {
   const [busyId, setBusyId] = useState('')
   const [error, setError] = useState('')
   const [activeCallId, setActiveCallId] = useState('')
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null)
+  const [activeRoom, setActiveRoom] = useState<Room | null>(null)
   const [remoteMedia, setRemoteMedia] = useState<RemoteMedia[]>([])
   const [muted, setMuted] = useState(false)
   const [cameraOn, setCameraOn] = useState(true)
+  const [needsAudioPlayback, setNeedsAudioPlayback] = useState(false)
+  const [needsVideoPlayback, setNeedsVideoPlayback] = useState(false)
   const callsRef = useRef<CallSession[]>([])
-  const peersRef = useRef(new Map<string, RTCPeerConnection>())
-  const pendingOffersRef = useRef(new Map<string, { callId: string; from: string; signal: CallSignal }>())
-  const pendingCandidatesRef = useRef(new Map<string, RTCIceCandidateInit[]>())
-  const localStreamRef = useRef<MediaStream | null>(null)
-  const iceServersRef = useRef<RTCIceServer[] | null>(null)
-  const localVideoRef = useRef<HTMLVideoElement | null>(null)
+  const roomRef = useRef<Room | null>(null)
+  const roomCallIdRef = useRef('')
+  const intentionalDisconnectRef = useRef(new WeakSet<Room>())
+  const confirmedCallsRef = useRef(new Set<string>())
 
-  const replaceCall = (call: CallSession) => {
+  const replaceCall = useCallback((call: CallSession) => {
     callsRef.current = callsRef.current.some((item) => item.id === call.id)
       ? callsRef.current.map((item) => item.id === call.id ? call : item)
       : [call, ...callsRef.current]
     setCalls(callsRef.current)
-  }
-
-  const rtcConfiguration = useCallback(async () => {
-    if (!iceServersRef.current) {
-      const response = await apiRequest<{ iceServers: RTCIceServer[] }>('/api/rtc/config')
-      iceServersRef.current = response.iceServers
-    }
-    return { iceServers: iceServersRef.current }
   }, [])
 
-  const acquireMedia = async (type: CallSession['type']) => {
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser does not support secure voice or video calls.')
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: type === 'video' })
-    localStreamRef.current = stream
-    setLocalStream(stream)
-    return stream
-  }
+  const closeCallRoom = useCallback(async (callId?: string) => {
+    const room = roomRef.current
+    if (!room) return
+    if (callId && roomCallIdRef.current !== callId) return
+    intentionalDisconnectRef.current.add(room)
+    roomRef.current = null
+    roomCallIdRef.current = ''
+    setActiveRoom(null)
+    setRemoteMedia([])
+    setActiveCallId('')
+    setNeedsAudioPlayback(false)
+    setNeedsVideoPlayback(false)
+    await room.disconnect(true)
+  }, [])
 
-  const signalPeer = async (callId: string, to: string, signal: CallSignal) => {
-    await apiRequest(`/api/calls/${encodeURIComponent(callId)}/signaling`, {
-      method: 'POST',
-      body: JSON.stringify({ to, signal }),
-    })
-  }
+  const fetchCallData = useCallback(() => Promise.all([
+    apiRequest<{ calls: CallSession[] }>('/api/calls/history'),
+    apiRequest<{ users: DirectoryUser[] }>('/api/users'),
+  ]), [])
 
-  const establishPeer = useCallback(async (call: CallSession, remoteUserId: string, makeOffer: boolean) => {
-    const key = `${call.id}:${remoteUserId}`
-    const existing = peersRef.current.get(key)
-    if (existing) return existing
-    const peer = new RTCPeerConnection(await rtcConfiguration())
-    peersRef.current.set(key, peer)
-    localStreamRef.current?.getTracks().forEach((track) => peer.addTrack(track, localStreamRef.current!))
-    peer.onicecandidate = (event) => {
-      if (!event.candidate) return
-      void signalPeer(call.id, remoteUserId, { type: 'candidate', ...event.candidate.toJSON() }).catch((signalError) => {
-        setError(signalError instanceof Error ? signalError.message : 'Unable to send a secure media candidate.')
-      })
-    }
-    peer.ontrack = (event) => {
-      const stream = event.streams[0]
-      if (!stream) return
-      setRemoteMedia((current) => current.some((entry) => entry.key === key)
-        ? current.map((entry) => entry.key === key ? { ...entry, stream } : entry)
-        : [...current, { key, userId: remoteUserId, stream }])
-    }
-    peer.onconnectionstatechange = () => {
-      if (peer.connectionState === 'connected') {
-        void apiRequest<{ call: CallSession }>(`/api/calls/${encodeURIComponent(call.id)}/connected`, { method: 'POST' })
-          .then(({ call: updated }) => replaceCall(updated))
-          .catch((connectionError) => setError(connectionError instanceof Error ? connectionError.message : 'Unable to confirm the secure call connection.'))
-      } else if (peer.connectionState === 'failed') {
-        setError('The secure media connection failed. Check network access or configure TURN relay in the server environment.')
-      }
-    }
-    if (makeOffer) {
-      const offer = await peer.createOffer()
-      await peer.setLocalDescription(offer)
-      await signalPeer(call.id, remoteUserId, { type: 'offer', sdp: offer.sdp ?? '' })
-    }
-    return peer
-  }, [rtcConfiguration])
+  const applyCallData = useCallback(([history, directory]: Awaited<ReturnType<typeof fetchCallData>>) => {
+    callsRef.current = history.calls
+    setCalls(history.calls)
+    setUsers(directory.users.filter((person) => person.id !== user?.id))
+  }, [user?.id])
 
-  const applyQueuedCandidates = async (peer: RTCPeerConnection, key: string) => {
-    const queued = pendingCandidatesRef.current.get(key) ?? []
-    pendingCandidatesRef.current.delete(key)
-    for (const candidate of queued) await peer.addIceCandidate(candidate)
-  }
-
-  const handleCallSignal = useCallback(async (event: MessageEvent<string>) => {
+  const loadData = useCallback(async () => {
     try {
-      const payload = JSON.parse(event.data) as { callId: string; from: string; to: string; signal: CallSignal }
-      if (payload.to !== user?.id) return
-      const call = callsRef.current.find((item) => item.id === payload.callId)
-      if (!call) return
-      const peerKey = `${call.id}:${payload.from}`
-      if (payload.signal.type === 'offer') {
-        const own = call.participants.find((participant) => participant.userId === user?.id)
-        if (own?.status !== 'accepted' && call.callerId !== user?.id) {
-          pendingOffersRef.current.set(peerKey, payload)
-          return
-        }
-        const peer = await establishPeer(call, payload.from, false)
-        await peer.setRemoteDescription({ type: 'offer', sdp: payload.signal.sdp })
-        await applyQueuedCandidates(peer, peerKey)
-        const answer = await peer.createAnswer()
-        await peer.setLocalDescription(answer)
-        await signalPeer(call.id, payload.from, { type: 'answer', sdp: answer.sdp ?? '' })
-      } else if (payload.signal.type === 'answer') {
-        const peer = peersRef.current.get(peerKey)
-        if (!peer) return
-        await peer.setRemoteDescription({ type: 'answer', sdp: payload.signal.sdp })
-        await applyQueuedCandidates(peer, peerKey)
-      } else {
-        const peer = peersRef.current.get(peerKey)
-        if (payload.signal.type !== 'candidate') return
-     const candidate: RTCIceCandidateInit = {
-       candidate: payload.signal.candidate,
-       sdpMid: payload.signal.sdpMid,
-       sdpMLineIndex: payload.signal.sdpMLineIndex,
-       usernameFragment: payload.signal.usernameFragment,
-     }
-     if (peer?.remoteDescription) await peer.addIceCandidate(candidate)
-        else pendingCandidatesRef.current.set(peerKey, [...(pendingCandidatesRef.current.get(peerKey) ?? []), candidate])
-      }
-    } catch (signalError) {
-      setError(signalError instanceof Error ? signalError.message : 'Unable to process the encrypted call signal.')
-    }
-  }, [establishPeer, user?.id])
-
-  const loadData = async () => {
-    setLoading(true)
-    setError('')
-    try {
-      const [history, directory] = await Promise.all([
-        apiRequest<{ calls: CallSession[] }>('/api/calls/history'),
-        apiRequest<{ users: DirectoryUser[] }>('/api/users'),
-      ])
-      callsRef.current = history.calls
-      setCalls(history.calls)
-      setUsers(directory.users.filter((person) => person.id !== user?.id))
+      applyCallData(await fetchCallData())
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Unable to load calls.')
     } finally {
       setLoading(false)
     }
-  }
+  }, [applyCallData, fetchCallData])
 
-  useEffect(() => { void loadData() }, [user?.id])
+  const connectCall = useCallback(async (call: CallSession) => {
+    if (roomRef.current) await closeCallRoom()
+    const { token, url } = await apiRequest<{ token: string; url: string }>(`/api/calls/${encodeURIComponent(call.id)}/token`, { method: 'POST' })
+    const room = new Room({ adaptiveStream: true, dynacast: true })
+    roomRef.current = room
+    roomCallIdRef.current = call.id
+    room.on(RoomEvent.AudioPlaybackStatusChanged, (playing) => setNeedsAudioPlayback(!playing))
+    room.on(RoomEvent.VideoPlaybackStatusChanged, (playing) => setNeedsVideoPlayback(!playing))
+    room.on(RoomEvent.TrackSubscribed, (track, _publication, participant) => {
+      const key = `${participant.identity}:${track.sid ?? track.mediaStreamTrack.id}`
+      setRemoteMedia((current) => current.some((entry) => entry.key === key)
+        ? current
+        : [...current, { key, userId: participant.identity, track }])
+      const confirmsMedia = call.type === 'video' ? track.kind === Track.Kind.Video : track.kind === Track.Kind.Audio
+      if (confirmsMedia && !confirmedCallsRef.current.has(call.id)) {
+        confirmedCallsRef.current.add(call.id)
+        void apiRequest<{ call: CallSession }>(`/api/calls/${encodeURIComponent(call.id)}/connected`, { method: 'POST' })
+          .then(({ call: updated }) => replaceCall(updated))
+          .catch((connectionError) => {
+            confirmedCallsRef.current.delete(call.id)
+            setError(connectionError instanceof Error ? connectionError.message : 'Unable to confirm the LiveKit call connection.')
+          })
+      }
+    })
+    room.on(RoomEvent.TrackUnsubscribed, (track, _publication, participant) => {
+      const key = `${participant.identity}:${track.sid ?? track.mediaStreamTrack.id}`
+      track.detach()
+      setRemoteMedia((current) => current.filter((entry) => entry.key !== key))
+    })
+    room.on(RoomEvent.Reconnecting, () => setError('LiveKit connection interrupted; attempting to reconnect…'))
+    room.on(RoomEvent.Reconnected, () => setError(''))
+    room.on(RoomEvent.Disconnected, () => {
+      if (roomRef.current !== room) return
+      roomRef.current = null
+      roomCallIdRef.current = ''
+      setActiveRoom(null)
+      setRemoteMedia([])
+      setActiveCallId('')
+      setNeedsAudioPlayback(false)
+      setNeedsVideoPlayback(false)
+      if (!intentionalDisconnectRef.current.has(room)) {
+        setError('The LiveKit call disconnected.')
+        void apiRequest<{ call: CallSession }>(`/api/calls/${encodeURIComponent(call.id)}/leave`, { method: 'POST' })
+          .then(({ call: updated }) => replaceCall(updated))
+          .catch((disconnectError) => setError(disconnectError instanceof Error ? disconnectError.message : 'Unable to update the disconnected call status.'))
+      }
+    })
+
+    try {
+      await room.connect(url, token)
+      await room.localParticipant.setMicrophoneEnabled(true)
+      if (call.type === 'video') await room.localParticipant.setCameraEnabled(true)
+      setMuted(false)
+      setCameraOn(call.type === 'video')
+      setActiveRoom(room)
+      setActiveCallId(call.id)
+    } catch (connectError) {
+      intentionalDisconnectRef.current.add(room)
+      if (roomRef.current === room) roomRef.current = null
+      roomCallIdRef.current = ''
+      await room.disconnect(true)
+      throw connectError
+    }
+  }, [closeCallRoom, replaceCall])
+
+  useEffect(() => {
+    let cancelled = false
+    void fetchCallData()
+      .then((data) => { if (!cancelled) applyCallData(data) })
+      .catch((loadError: unknown) => {
+        if (!cancelled) setError(loadError instanceof Error ? loadError.message : 'Unable to load calls.')
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [applyCallData, fetchCallData])
 
   useEffect(() => {
     const source = openAuthenticatedEventStream('/api/realtime')
     const onCallUpdate = (event: MessageEvent<string>) => {
       try {
         const payload = JSON.parse(event.data) as { call?: CallSession }
-        if (payload.call?.participants.some((participant) => participant.userId === user?.id)) {
-          replaceCall(payload.call)
+        if (!payload.call?.participants.some((participant) => participant.userId === user?.id)) return
+        replaceCall(payload.call)
+        if (['ended', 'cancelled', 'rejected', 'missed'].includes(payload.call.status)) {
+          void closeCallRoom(payload.call.id)
+        } else if (payload.call.participants.find((participant) => participant.userId === user?.id)?.status === 'left') {
+          void closeCallRoom(payload.call.id)
         }
       } catch {
         setError('A call status update could not be read. Refresh call history to retry.')
       }
     }
     source.addEventListener('call:update', onCallUpdate)
-    source.addEventListener('call:signal', handleCallSignal)
     return () => source.close()
-  }, [handleCallSignal, user?.id])
+  }, [closeCallRoom, replaceCall, user?.id])
 
-  useEffect(() => {
-    if (localVideoRef.current) localVideoRef.current.srcObject = localStream
-  }, [localStream])
+  useEffect(() => () => {
+    const room = roomRef.current
+    if (room) {
+      intentionalDisconnectRef.current.add(room)
+      const callId = roomCallIdRef.current
+      roomRef.current = null
+      roomCallIdRef.current = ''
+      void room.disconnect(true)
+      if (callId) {
+        void apiRequest(`/api/calls/${encodeURIComponent(callId)}/leave`, { method: 'POST' })
+          .catch((cleanupError: unknown) => console.error('Unable to leave the call while closing the calls page.', cleanupError))
+      }
+    }
+  }, [])
 
   const filteredUsers = useMemo(() => users.filter((person) => `${person.name} ${person.handle}`.toLowerCase().includes(query.toLowerCase())), [users, query])
 
-  const stopLocalMedia = () => {
-    localStreamRef.current?.getTracks().forEach((track) => track.stop())
-    localStreamRef.current = null
-    setLocalStream(null)
-  }
-
-  const closeCallPeers = (callId: string) => {
-    for (const [key, peer] of peersRef.current) {
-      if (!key.startsWith(`${callId}:`)) continue
-      peer.close()
-      peersRef.current.delete(key)
-    }
-    setRemoteMedia((current) => current.filter((entry) => !entry.key.startsWith(`${callId}:`)))
-    stopLocalMedia()
-    setActiveCallId('')
+  const refreshData = () => {
+    setLoading(true)
+    setError('')
+    void loadData()
   }
 
   const startCall = async (person: DirectoryUser, type: CallSession['type']) => {
     setError('')
     setBusyId(person.id)
+    let createdCall: CallSession | null = null
     try {
-      await acquireMedia(type)
       const response = await apiRequest<{ call: CallSession }>('/api/calls/start', {
         method: 'POST',
         body: JSON.stringify({ targetUserId: person.id, type }),
       })
+      createdCall = response.call
       replaceCall(response.call)
-      setActiveCallId(response.call.id)
-      await establishPeer(response.call, person.id, true)
+      await connectCall(response.call)
     } catch (startError) {
-      stopLocalMedia()
-      setError(startError instanceof Error ? startError.message : 'Unable to start this call.')
+      let cleanupError = ''
+      if (createdCall) {
+        await closeCallRoom(createdCall.id).catch((failure: unknown) => {
+          cleanupError = failure instanceof Error ? failure.message : 'Media cleanup failed.'
+        })
+        try {
+          await apiRequest(`/api/calls/${encodeURIComponent(createdCall.id)}/cancel`, { method: 'POST' })
+        } catch (failure) {
+          cleanupError = [cleanupError, failure instanceof Error ? failure.message : 'The call could not be cancelled.'].filter(Boolean).join(' ')
+        }
+      }
+      setError([startError instanceof Error ? startError.message : 'Unable to start this call.', cleanupError].filter(Boolean).join(' '))
     } finally {
       setBusyId('')
     }
@@ -240,83 +254,112 @@ export function CallsPage() {
     setBusyId(call.id)
     setError('')
     try {
-      if (action === 'accept') await acquireMedia(call.type)
       const response = await apiRequest<{ call: CallSession }>(`/api/calls/${encodeURIComponent(call.id)}/${action}`, { method: 'POST' })
       replaceCall(response.call)
-      if (action === 'accept') {
-        setActiveCallId(call.id)
-        const ownOffer = pendingOffersRef.current.get(`${call.id}:${call.callerId}`)
-        if (ownOffer) {
-          pendingOffersRef.current.delete(`${call.id}:${call.callerId}`)
-          await handleCallSignal(new MessageEvent('call:signal', { data: JSON.stringify(ownOffer) }))
-        }
-      } else {
-        closeCallPeers(call.id)
+      if (action === 'accept') await connectCall(response.call)
+      else {
+        confirmedCallsRef.current.delete(call.id)
+        await closeCallRoom(call.id)
       }
     } catch (actionError) {
-      if (action === 'accept') stopLocalMedia()
+      if (action === 'accept') {
+        setError(actionError instanceof Error ? actionError.message : 'Unable to join this call.')
+        return
+      }
       setError(actionError instanceof Error ? actionError.message : 'Unable to update this call.')
     } finally {
       setBusyId('')
     }
   }
 
-  const toggleMute = async () => {
-    if (!activeCall || !localStreamRef.current) return
-    const nextMuted = !muted
-    localStreamRef.current.getAudioTracks().forEach((track) => { track.enabled = !nextMuted })
-    setMuted(nextMuted)
+  const rejoinCall = async (call: CallSession) => {
+    setBusyId(call.id)
+    setError('')
     try {
+      await connectCall(call)
+    } catch (joinError) {
+      setError(joinError instanceof Error ? joinError.message : 'Unable to reconnect to this call.')
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  const toggleMute = async () => {
+    const room = roomRef.current
+    if (!activeCall || !room) return
+    const nextMuted = !muted
+    try {
+      await room.localParticipant.setMicrophoneEnabled(!nextMuted)
       await apiRequest(`/api/calls/${encodeURIComponent(activeCall.id)}/mute`, { method: 'POST', body: JSON.stringify({ muted: nextMuted }) })
+      setMuted(nextMuted)
     } catch (muteError) {
-      localStreamRef.current.getAudioTracks().forEach((track) => { track.enabled = muted })
-      setMuted(muted)
+      try {
+        await room.localParticipant.setMicrophoneEnabled(!muted)
+      } catch (rollbackError) {
+        setError(`${muteError instanceof Error ? muteError.message : 'Unable to update microphone state.'} Microphone rollback failed: ${rollbackError instanceof Error ? rollbackError.message : 'unknown error'}`)
+        return
+      }
       setError(muteError instanceof Error ? muteError.message : 'Unable to update microphone state.')
     }
   }
 
   const toggleCamera = async () => {
-    if (!activeCall || activeCall.type !== 'video' || !localStreamRef.current) return
+    const room = roomRef.current
+    if (!activeCall || activeCall.type !== 'video' || !room) return
     const nextCameraOn = !cameraOn
-    localStreamRef.current.getVideoTracks().forEach((track) => { track.enabled = nextCameraOn })
-    setCameraOn(nextCameraOn)
     try {
+      await room.localParticipant.setCameraEnabled(nextCameraOn)
       await apiRequest(`/api/calls/${encodeURIComponent(activeCall.id)}/camera`, { method: 'POST', body: JSON.stringify({ cameraOn: nextCameraOn }) })
+      setCameraOn(nextCameraOn)
     } catch (cameraError) {
-      localStreamRef.current.getVideoTracks().forEach((track) => { track.enabled = cameraOn })
-      setCameraOn(cameraOn)
+      try {
+        await room.localParticipant.setCameraEnabled(cameraOn)
+      } catch (rollbackError) {
+        setError(`${cameraError instanceof Error ? cameraError.message : 'Unable to update camera state.'} Camera rollback failed: ${rollbackError instanceof Error ? rollbackError.message : 'unknown error'}`)
+        return
+      }
       setError(cameraError instanceof Error ? cameraError.message : 'Unable to update camera state.')
     }
   }
 
-  useEffect(() => () => {
-    peersRef.current.forEach((peer) => peer.close())
-    localStreamRef.current?.getTracks().forEach((track) => track.stop())
-  }, [])
+  const enablePlayback = async () => {
+    const room = roomRef.current
+    if (!room) return
+    try {
+      await Promise.all([room.startAudio(), room.startVideo()])
+      setNeedsAudioPlayback(false)
+      setNeedsVideoPlayback(false)
+    } catch (playbackError) {
+      setError(playbackError instanceof Error ? playbackError.message : 'Unable to start media playback.')
+    }
+  }
 
   const nameFor = (userId: string) => userId === user?.id ? 'You' : users.find((person) => person.id === userId)?.name ?? 'NOVAKOKO member'
-  const activeCalls = calls.filter((call) => !['ended', 'cancelled', 'rejected'].includes(call.status))
+  const activeCalls = calls.filter((call) => !['ended', 'cancelled', 'rejected', 'missed'].includes(call.status))
   const activeCall = calls.find((call) => call.id === activeCallId)
+  const localVideoTrack = activeRoom?.localParticipant.getTrackPublication(Track.Source.Camera)?.track
 
   return (
     <div className="space-y-5 p-4 sm:p-6">
       <header><p className="text-xs font-semibold uppercase text-indigo-700">Calls</p><h2 className="mt-2 text-2xl font-semibold text-slate-900">Call history</h2></header>
-      <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900" role="status">Calls use encrypted peer-to-peer WebRTC media. A TURN relay can be configured by your administrator for networks that block direct connections.</div>
+      <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900" role="status">Calls use LiveKit for encrypted, low-latency voice and video. Your administrator must configure the LiveKit media server.</div>
       {error ? <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</p> : null}
 
       {activeCall ? <section aria-label="Active call" className="rounded-2xl border border-indigo-200 bg-white p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div><h3 className="font-semibold text-slate-900">{activeCall.type === 'video' ? 'Video call' : 'Voice call'}</h3><p className="text-sm text-slate-600">{activeCall.status === 'connected' ? 'Encrypted media connected' : activeCall.status === 'ringing' ? 'Ringing — awaiting an answer' : 'Establishing encrypted media…'}</p></div>
+          <div><h3 className="font-semibold text-slate-900">{activeCall.type === 'video' ? 'Video call' : 'Voice call'}</h3><p className="text-sm text-slate-600">{activeCall.status === 'connected' ? 'LiveKit media connected' : activeCall.status === 'ringing' ? 'Ringing — awaiting an answer' : 'Connecting to LiveKit…'}</p></div>
           <div className="flex gap-2">
-            <Button variant="secondary" size="sm" disabled={!localStream} onClick={() => void toggleMute()}>{muted ? 'Unmute' : 'Mute'}</Button>
-            {activeCall.type === 'video' ? <Button variant="secondary" size="sm" disabled={!localStream} onClick={() => void toggleCamera()}>{cameraOn ? 'Turn camera off' : 'Turn camera on'}</Button> : null}
+            {needsAudioPlayback || needsVideoPlayback ? <Button variant="secondary" size="sm" onClick={() => void enablePlayback()}>Enable media playback</Button> : null}
+            <Button variant="secondary" size="sm" disabled={!activeRoom} onClick={() => void toggleMute()}>{muted ? 'Unmute' : 'Mute'}</Button>
+            {activeCall.type === 'video' ? <Button variant="secondary" size="sm" disabled={!activeRoom} onClick={() => void toggleCamera()}>{cameraOn ? 'Turn camera off' : 'Turn camera on'}</Button> : null}
             <Button variant="primary" size="sm" onClick={() => void callAction(activeCall, 'leave')}>Leave call</Button>
           </div>
         </div>
         {activeCall.type === 'video' ? <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <div><p className="mb-1 text-xs font-medium text-slate-500">You</p><video ref={localVideoRef} autoPlay muted playsInline className="aspect-video w-full rounded-xl bg-slate-950 object-cover" /></div>
-          {remoteMedia.map((entry) => <div key={entry.key}><p className="mb-1 text-xs font-medium text-slate-500">{nameFor(entry.userId)}</p><video autoPlay playsInline ref={(element) => { if (element && element.srcObject !== entry.stream) element.srcObject = entry.stream }} className="aspect-video w-full rounded-xl bg-slate-950 object-cover" /></div>)}
-        </div> : remoteMedia.map((entry) => <audio key={entry.key} autoPlay ref={(element) => { if (element && element.srcObject !== entry.stream) element.srcObject = entry.stream }} />)}
+          <div><p className="mb-1 text-xs font-medium text-slate-500">You</p>{localVideoTrack ? <AttachedTrack track={localVideoTrack} muted className="aspect-video w-full rounded-xl bg-slate-950 object-cover" /> : <div className="aspect-video w-full rounded-xl bg-slate-950" />}</div>
+          {remoteMedia.filter((entry) => entry.track.kind === Track.Kind.Video).map((entry) => <div key={entry.key}><p className="mb-1 text-xs font-medium text-slate-500">{nameFor(entry.userId)}</p><AttachedTrack track={entry.track} className="aspect-video w-full rounded-xl bg-slate-950 object-cover" /></div>)}
+        </div> : null}
+        {remoteMedia.filter((entry) => entry.track.kind === Track.Kind.Audio).map((entry) => <AttachedTrack key={entry.key} track={entry.track} className="hidden" />)}
       </section> : null}
 
       <section className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -329,18 +372,18 @@ export function CallsPage() {
       </section>
 
       <section>
-        <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Recent and active calls</h3><Button variant="ghost" size="sm" onClick={() => void loadData()} disabled={loading}>Refresh</Button></div>
+        <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Recent and active calls</h3><Button variant="ghost" size="sm" onClick={refreshData} disabled={loading}>Refresh</Button></div>
         {loading ? <p className="rounded-xl bg-white p-4 text-sm text-slate-500">Loading call history…</p> : null}
         {!loading && calls.length === 0 ? <p className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">No calls yet.</p> : null}
         <ul className="divide-y divide-slate-200 rounded-2xl border border-slate-200 bg-white">
           {calls.map((call) => {
             const own = call.participants.find((participant) => participant.userId === user?.id)
             const counterparties = call.participants.filter((participant) => participant.userId !== user?.id).map((participant) => nameFor(participant.userId)).join(', ')
-            const incoming = call.callerId !== user?.id && own?.status === 'pending'
-            return <li key={call.id} className="flex flex-wrap items-center gap-3 p-4"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-600">{call.type === 'video' ? <Video className="h-5 w-5" /> : <Phone className="h-5 w-5" />}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-slate-900">{counterparties || 'Call'}</p><p className="mt-1 text-xs text-slate-500">{call.type} · {call.status} · {new Date(call.createdAt).toLocaleString()}</p></div>{incoming ? <><Button variant="primary" size="sm" disabled={busyId === call.id || Boolean(activeCall)} onClick={() => void callAction(call, 'accept')}>Accept</Button><Button variant="secondary" size="sm" disabled={busyId === call.id} onClick={() => void callAction(call, 'reject')}>Decline</Button></> : null}{call.callerId === user?.id && call.status === 'ringing' ? <Button variant="secondary" size="sm" disabled={busyId === call.id} onClick={() => void callAction(call, 'cancel')}>Cancel</Button> : null}{call.status === 'connected' && own?.status !== 'left' ? <Button variant="secondary" size="sm" disabled={busyId === call.id} onClick={() => void callAction(call, 'leave')}>Leave</Button> : null}</li>
+            const incoming = call.callerId !== user?.id && own?.status === 'pending' && call.status === 'ringing'
+            return <li key={call.id} className="flex flex-wrap items-center gap-3 p-4"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-600">{call.type === 'video' ? <Video className="h-5 w-5" /> : <Phone className="h-5 w-5" />}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-slate-900">{counterparties || 'Call'}</p><p className="mt-1 text-xs text-slate-500">{call.type} · {call.status} · {new Date(call.createdAt).toLocaleString()}</p></div>{incoming ? <><Button variant="primary" size="sm" disabled={busyId === call.id || Boolean(activeCall)} onClick={() => void callAction(call, 'accept')}>Accept</Button><Button variant="secondary" size="sm" disabled={busyId === call.id} onClick={() => void callAction(call, 'reject')}>Decline</Button></> : null}{call.callerId === user?.id && call.status === 'ringing' ? <Button variant="secondary" size="sm" disabled={busyId === call.id} onClick={() => void callAction(call, 'cancel')}>Cancel</Button> : null}{own && ['accepted', 'connected'].includes(own.status) && activeCallId !== call.id ? <Button variant="primary" size="sm" disabled={Boolean(busyId) || Boolean(activeCall)} onClick={() => void rejoinCall(call)}>Join</Button> : null}{own && ['accepted', 'connected'].includes(own.status) ? <Button variant="secondary" size="sm" disabled={busyId === call.id} onClick={() => void callAction(call, 'leave')}>Leave</Button> : null}</li>
           })}
         </ul>
-        {activeCalls.length > 0 ? <p className="mt-2 text-xs text-slate-500">A call is only marked connected after the browser confirms that encrypted WebRTC media is established.</p> : null}
+        {activeCalls.length > 0 ? <p className="mt-2 text-xs text-slate-500">A call is only marked connected after LiveKit delivers remote media to a participant.</p> : null}
       </section>
     </div>
   )

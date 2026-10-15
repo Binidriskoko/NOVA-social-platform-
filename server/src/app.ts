@@ -29,7 +29,11 @@ const allowedOrigins = Array.from(
     'https://nova-social-platform.vercel.app',
   ]),
 );
-const connectSources = ["'self'", ...allowedOrigins.filter((origin) => origin !== '*')];
+const connectSources = [
+  "'self'",
+  ...allowedOrigins.filter((origin) => origin !== '*'),
+  ...(env.LIVEKIT_URL ? [env.LIVEKIT_URL] : []),
+];
 
 app.use(cfRayDiagnostic);
 app.use(helmet({

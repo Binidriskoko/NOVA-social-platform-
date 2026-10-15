@@ -6,6 +6,7 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   test: {
+    setupFiles: ['./server/src/__tests__/setup.ts'],
     exclude: [
       '**/node_modules/**',
       '**/dist/**',

@@ -12,7 +12,7 @@ const runtimeEnvironment = {
 
 const DEVELOPMENT_JWT_SECRET = 'nova-dev-jwt-secret-key-32-chars-plus';
 
-const envSchema = z.object({
+export const envSchema = z.object({
   NODE_ENV: z.preprocess(
     (value) => (typeof value === 'string' ? value.toLowerCase() : value),
     z.enum(['development', 'test', 'production']),
@@ -30,20 +30,55 @@ const envSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(900000),
   RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(100),
   AUTH_RATE_LIMIT_MAX: z.coerce.number().default(20),
-  TURN_URLS: z.string().default(''),
-  TURN_SHARED_SECRET: z.string().optional(),
-  TURN_USERNAME_PREFIX: z.string().default('nova'),
-  TURN_CREDENTIAL_TTL_SECONDS: z.coerce.number().int().min(300).max(86400).default(3600),
+  LIVEKIT_URL: z.string().optional(),
+  LIVEKIT_API_KEY: z.string().optional(),
+  LIVEKIT_API_SECRET: z.string().optional(),
 }).superRefine((data, ctx) => {
   const hasProductionSecret = Boolean(process.env.JWT_SECRET && process.env.JWT_SECRET.length >= 32);
   const hasProductionDatabaseUrl = Boolean(process.env.DATABASE_URL);
   const hasProductionCorsOrigin = Boolean(runtimeEnvironment.CORS_ORIGIN);
 
-  if (Boolean(data.TURN_URLS.trim()) !== Boolean(data.TURN_SHARED_SECRET)) {
+  const liveKitValues = [data.LIVEKIT_URL, data.LIVEKIT_API_KEY, data.LIVEKIT_API_SECRET];
+  if (liveKitValues.some(Boolean) && !liveKitValues.every(Boolean)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['TURN_SHARED_SECRET'],
-      message: 'TURN_URLS and TURN_SHARED_SECRET must be configured together.',
+      path: ['LIVEKIT_API_SECRET'],
+      message: 'LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET must be configured together.',
+    });
+  }
+  if (data.LIVEKIT_URL) {
+    try {
+      const liveKitUrl = new URL(data.LIVEKIT_URL);
+      if (!['wss:', 'ws:'].includes(liveKitUrl.protocol) || !liveKitUrl.host || liveKitUrl.username || liveKitUrl.password || liveKitUrl.pathname !== '/' || liveKitUrl.search || liveKitUrl.hash) {
+        throw new Error('Invalid LiveKit URL');
+      }
+      if (data.NODE_ENV === 'production' && liveKitUrl.protocol !== 'wss:') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['LIVEKIT_URL'],
+          message: 'LIVEKIT_URL must use wss:// in production.',
+        });
+      }
+    } catch {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['LIVEKIT_URL'],
+        message: 'LIVEKIT_URL must be a valid ws:// or wss:// URL without embedded credentials.',
+      });
+    }
+  }
+  if (data.LIVEKIT_API_KEY && (data.LIVEKIT_API_KEY.trim() !== data.LIVEKIT_API_KEY || /[\r\n]/.test(data.LIVEKIT_API_KEY))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['LIVEKIT_API_KEY'],
+      message: 'LIVEKIT_API_KEY must be a non-empty key without surrounding whitespace.',
+    });
+  }
+  if (data.LIVEKIT_API_SECRET && (data.LIVEKIT_API_SECRET.trim() !== data.LIVEKIT_API_SECRET || data.LIVEKIT_API_SECRET.length < 16 || /[\r\n]/.test(data.LIVEKIT_API_SECRET))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['LIVEKIT_API_SECRET'],
+      message: 'LIVEKIT_API_SECRET must be a non-empty secret of at least 16 characters without surrounding whitespace.',
     });
   }
 

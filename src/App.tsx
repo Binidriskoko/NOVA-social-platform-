@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { AuthProvider, useAuth } from './context/AuthContext'
@@ -12,9 +13,14 @@ import { SettingsPage } from './pages/SettingsPage'
 import { AuthPage } from './pages/AuthPage'
 import { AdminPage } from './pages/AdminPage'
 import { DownloadPage } from './pages/DownloadPage'
-import { LivePage } from './pages/LivePage'
-import { CallsPage } from './pages/CallsPage'
 import { AiPage } from './pages/AiPage'
+
+const LivePage = lazy(() => import('./pages/LivePage').then(({ LivePage: page }) => ({ default: page })))
+const CallsPage = lazy(() => import('./pages/CallsPage').then(({ CallsPage: page }) => ({ default: page })))
+
+function MediaPageLoading() {
+  return <div className="p-6 text-sm text-slate-600" role="status">Loading media tools…</div>
+}
 
 function PublicRoute() {
   const { isAuthenticated, isLoading } = useAuth()
@@ -77,8 +83,8 @@ function AppRoutes() {
         <Route path="/create" element={<AppShell><CreatePage /></AppShell>} />
         <Route path="/notifications" element={<AppShell><NotificationsPage /></AppShell>} />
         <Route path="/messages" element={<AppShell><MessagesPage /></AppShell>} />
-        <Route path="/live" element={<AppShell><LivePage /></AppShell>} />
-        <Route path="/calls" element={<AppShell><CallsPage /></AppShell>} />
+        <Route path="/live" element={<Suspense fallback={<MediaPageLoading />}><AppShell><LivePage /></AppShell></Suspense>} />
+        <Route path="/calls" element={<Suspense fallback={<MediaPageLoading />}><AppShell><CallsPage /></AppShell></Suspense>} />
         <Route path="/ai" element={<AppShell><AiPage /></AppShell>} />
         <Route path="/communities" element={<AppShell><CommunitiesPage /></AppShell>} />
         <Route path="/profile" element={<AppShell><ProfilePage /></AppShell>} />

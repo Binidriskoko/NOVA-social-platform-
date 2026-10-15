@@ -1,6 +1,7 @@
 import { prisma, isDatabaseAvailable } from './prisma.js';
 import { socialStore } from './socialStore.js';
 import { realtimeHub } from './realtime.js';
+import { isLiveKitConfigured } from './livekit.js';
 
 export type NotificationPreference = {
   key: 'social' | 'messages' | 'security' | 'live' | 'calls' | 'mentions';
@@ -41,7 +42,7 @@ export type CallSession = {
   type: CallType;
   status: CallStatus;
   participants: CallParticipantState[];
-  provider: 'webrtc-peer';
+  provider: 'livekit';
   providerConfigured: boolean;
   createdAt: string;
   updatedAt: string;
@@ -95,7 +96,7 @@ export type LiveSession = {
   recordingUrl?: string | null;
   recordingStatus: 'UNAVAILABLE' | 'RECORDING' | 'READY';
   analyticsHook: string | null;
-  provider: 'webrtc-peer';
+  provider: 'livekit';
   providerConfigured: boolean;
   createdAt: string;
   updatedAt: string;
@@ -358,8 +359,8 @@ export function createCallSession(callerId: string, targetUserIds: string[], typ
       { userId: callerId, status: 'pending', muted: false, cameraOn: type === 'video', speakerOn: true },
       ...targetUserIds.map((userId) => ({ userId, status: 'pending' as const, muted: false, cameraOn: type === 'video', speakerOn: true })),
     ],
-    provider: 'webrtc-peer',
-    providerConfigured: true,
+    provider: 'livekit',
+    providerConfigured: isLiveKitConfigured(),
     createdAt: now,
     updatedAt: now,
   };
@@ -427,8 +428,8 @@ export function createLiveSession(hostId: string, input: { title: string; descri
     recordingUrl: null,
     recordingStatus: 'UNAVAILABLE',
     analyticsHook: null,
-    provider: 'webrtc-peer',
-    providerConfigured: true,
+    provider: 'livekit',
+    providerConfigured: isLiveKitConfigured(),
     createdAt: now,
     updatedAt: now,
   };

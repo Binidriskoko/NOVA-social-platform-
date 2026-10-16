@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Bell,
+  CircleDot,
   Compass,
   House,
   LogOut,
@@ -39,10 +40,20 @@ export const sidebarItems = [
   { label: 'AI Studio', path: '/ai', icon: Sparkles },
 ]
 
+const messagesNavigationItems = [
+  { label: 'Chats', path: '/messages', icon: MessageCircleMore },
+  { label: 'Updates', path: '/updates', icon: CircleDot },
+  { label: 'Communities', path: '/communities', icon: UsersRound },
+  { label: 'Calls', path: '/calls', icon: Phone },
+]
+
+const messagesNavigationPaths = new Set(messagesNavigationItems.map(({ path }) => path))
+
 export function AppShell({ children }: AppShellProps) {
   const location = useLocation()
   const navigate = useNavigate()
   const { user, logout, isLoading } = useAuth()
+  const isMessagesExperience = messagesNavigationPaths.has(location.pathname)
   const isMessagingSurface = location.pathname === '/messages' || location.pathname === '/updates'
   const isVideoSurface = location.pathname === '/videos'
   const canAccessAdmin = ['ADMIN', 'SUPER_ADMIN', 'MODERATOR'].includes(user?.role ?? 'USER')
@@ -127,8 +138,34 @@ export function AppShell({ children }: AppShellProps) {
 
       </div>
 
-      <MobileNavigation />
+      {isMessagesExperience ? <MessagesNavigation /> : <MobileNavigation />}
     </div>
+  )
+}
+
+export function MessagesNavigation() {
+  return (
+    <nav aria-label="Messages navigation" className="fixed inset-x-0 bottom-0 z-40 border-t border-indigo-100/80 bg-white/95 px-2 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1.5 backdrop-blur-xl">
+      <div className="mx-auto grid max-w-xl grid-cols-4 gap-1">
+        {messagesNavigationItems.map(({ label, path, icon: Icon }) => (
+          <NavLink
+            key={path}
+            to={path}
+            end
+            aria-label={label}
+            className={({ isActive }) => cn(
+              'flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-xl px-1 py-1 text-[10px] font-semibold transition-colors',
+              isActive
+                ? 'bg-gradient-to-br from-blue-50 to-violet-50 text-blue-700 ring-1 ring-inset ring-indigo-100'
+                : 'text-slate-500 hover:bg-indigo-50 hover:text-indigo-700',
+            )}
+          >
+            <Icon className="h-5 w-5" aria-hidden="true" />
+            <span>{label}</span>
+          </NavLink>
+        ))}
+      </div>
+    </nav>
   )
 }
 

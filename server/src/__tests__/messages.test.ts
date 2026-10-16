@@ -88,9 +88,10 @@ describe('messaging database responses', () => {
       return Promise.resolve(ids.map((id) => ({ id }))) as never;
     });
     vi.spyOn(prisma.conversation, 'findUnique').mockResolvedValue({ id: 'database-group', isGroup: true, isChannel: false } as never);
-    vi.spyOn(prisma.conversationParticipant, 'findUnique').mockImplementation((args) => {
-      const userId = (args as unknown as { where: { conversationId_userId: { userId: string } } }).where.conversationId_userId.userId;
-      return Promise.resolve({ id: `participant-${userId}`, conversationId: 'database-group', userId, role: roles[userId] }) as never;
+    vi.spyOn(prisma.conversationParticipant, 'findFirst').mockImplementation((args) => {
+      const userId = (args as unknown as { where: { userId: string } }).where.userId;
+      if (userId === 'former-admin') return Promise.resolve(null) as never;
+      return Promise.resolve({ id: `participant-${userId}`, conversationId: 'database-group', userId, role: roles[userId], leftAt: null }) as never;
     });
     vi.spyOn(prisma.conversationParticipant, 'findMany').mockResolvedValue([] as never);
     vi.spyOn(prisma.conversationParticipant, 'createMany').mockResolvedValue({ count: 1 } as never);
@@ -105,11 +106,17 @@ describe('messaging database responses', () => {
     expect((await request(app).post(participantsPath).set(authFor('creator')).send({ participantIds: ['newcomer'] })).status).toBe(201);
     expect((await request(app).post(participantsPath).set(authFor('admin')).send({ participantIds: ['newcomer'] })).status).toBe(201);
     expect((await request(app).post(participantsPath).set(authFor('member')).send({ participantIds: ['newcomer'] })).status).toBe(403);
+    expect((await request(app).post(participantsPath).set(authFor('former-admin')).send({ participantIds: ['newcomer'] })).status).toBe(404);
 
     const rolePath = '/api/conversations/database-group/participants/member';
     expect((await request(app).patch(rolePath).set(authFor('creator')).send({ role: 'MODERATOR' })).status).toBe(200);
     expect((await request(app).patch(rolePath).set(authFor('admin')).send({ role: 'MODERATOR' })).status).toBe(200);
     expect((await request(app).patch(rolePath).set(authFor('member')).send({ role: 'MEMBER' })).status).toBe(403);
+    expect((await request(app).patch('/api/conversations/database-group/participants/newcomer').set(authFor('former-admin')).send({ role: 'MODERATOR' })).status).toBe(404);
+    expect(prisma.conversationParticipant.findFirst).toHaveBeenCalledWith({
+      where: { conversationId: 'database-group', userId: 'former-admin', leftAt: null },
+      select: { role: true },
+    });
     expect(prisma.conversationParticipant.createMany).toHaveBeenCalledTimes(2);
     expect(prisma.conversationParticipant.update).toHaveBeenCalledTimes(2);
   });

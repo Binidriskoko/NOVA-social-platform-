@@ -7,11 +7,12 @@ import { Button } from './ui/Button'
 type PostComposerProps = {
   onClose: () => void
   onPublished: () => void
+  inline?: boolean
 }
 
 type Visibility = 'PUBLIC' | 'FOLLOWERS' | 'PRIVATE'
 
-export function PostComposer({ onClose, onPublished }: PostComposerProps) {
+export function PostComposer({ onClose, onPublished, inline = false }: PostComposerProps) {
   const [content, setContent] = useState('')
   const [mediaUrl, setMediaUrl] = useState('')
   const [mediaFile, setMediaFile] = useState<File | null>(null)
@@ -103,8 +104,8 @@ export function PostComposer({ onClose, onPublished }: PostComposerProps) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-labelledby="post-composer-title">
-      <form onSubmit={(event) => void publishPost(event)} className="max-h-[95dvh] w-full max-w-2xl overflow-y-auto rounded-t-3xl bg-white p-4 shadow-2xl sm:rounded-3xl sm:p-6">
+    <div className={inline ? 'mt-3' : 'fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 p-0 sm:items-center sm:p-4'} {...(inline ? {} : { role: 'dialog', 'aria-modal': true })} aria-labelledby="post-composer-title">
+      <form onSubmit={(event) => void publishPost(event)} className={inline ? 'w-full rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6' : 'max-h-[95dvh] w-full max-w-2xl overflow-y-auto rounded-t-3xl bg-white p-4 shadow-2xl sm:rounded-3xl sm:p-6'}>
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.24em] text-indigo-600">Create</p>

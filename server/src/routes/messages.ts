@@ -979,7 +979,7 @@ const { participantIds } = validation.data;
   const userId = req.user!.id;
   const dbAvailable = await isDatabaseAvailable();
   if (dbAvailable) {
-    const actor = await prisma.conversationParticipant.findUnique({ where: { conversationId_userId: { conversationId, userId } }, select: { role: true } });
+    const actor = await prisma.conversationParticipant.findFirst({ where: { conversationId, userId, leftAt: null }, select: { role: true } });
     const conversation = await prisma.conversation.findUnique({ where: { id: conversationId }, select: { id: true, isGroup: true, isChannel: true } });
     if (!actor || !conversation) return res.status(404).json({ message: 'Conversation not found.' });
     if (!conversation.isGroup && !conversation.isChannel) return res.status(400).json({ message: 'Members can only be added to group conversations.' });
@@ -1017,7 +1017,7 @@ messagesRouter.patch('/conversations/:id/group', requireAuth, async (req, res) =
     ? await prisma.conversation.findUnique({ where: { id: conversationId }, select: { id: true, isGroup: true, isChannel: true } })
     : socialStore.state.conversations.find((entry) => entry.id === conversationId);
   const actor = dbAvailable
-    ? await prisma.conversationParticipant.findUnique({ where: { conversationId_userId: { conversationId, userId } }, select: { role: true } })
+    ? await prisma.conversationParticipant.findFirst({ where: { conversationId, userId, leftAt: null }, select: { role: true } })
     : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === userId);
 
   if (!conversation || !actor) return res.status(404).json({ message: 'Group conversation not found.' });
@@ -1050,10 +1050,10 @@ messagesRouter.patch('/conversations/:id/participants/:userId', requireAuth, asy
     ? await prisma.conversation.findUnique({ where: { id: conversationId }, select: { isGroup: true, isChannel: true } })
     : socialStore.state.conversations.find((entry) => entry.id === conversationId);
   const actor = dbAvailable
-    ? await prisma.conversationParticipant.findUnique({ where: { conversationId_userId: { conversationId, userId: req.user!.id } }, select: { role: true } })
+    ? await prisma.conversationParticipant.findFirst({ where: { conversationId, userId: req.user!.id, leftAt: null }, select: { role: true } })
     : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === req.user!.id);
   const target = dbAvailable
-    ? await prisma.conversationParticipant.findUnique({ where: { conversationId_userId: { conversationId, userId: targetId } } })
+    ? await prisma.conversationParticipant.findFirst({ where: { conversationId, userId: targetId, leftAt: null } })
     : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === targetId);
   if (!conversation || !actor || !target) return res.status(404).json({ message: 'Conversation member not found.' });
   if (!conversation.isGroup && !conversation.isChannel) return res.status(400).json({ message: 'Roles can only be changed in group conversations.' });
@@ -1071,10 +1071,10 @@ messagesRouter.delete('/conversations/:id/participants/:userId', requireAuth, as
   const userId = req.user!.id;
   const dbAvailable = await isDatabaseAvailable();
   const actor = dbAvailable
-    ? await prisma.conversationParticipant.findUnique({ where: { conversationId_userId: { conversationId, userId } }, select: { role: true } })
+    ? await prisma.conversationParticipant.findFirst({ where: { conversationId, userId, leftAt: null }, select: { role: true } })
     : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === userId);
   const target = dbAvailable
-    ? await prisma.conversationParticipant.findUnique({ where: { conversationId_userId: { conversationId, userId: targetId } } })
+    ? await prisma.conversationParticipant.findFirst({ where: { conversationId, userId: targetId, leftAt: null } })
     : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === targetId);
   if (!actor || !target) return res.status(404).json({ message: 'Conversation member not found.' });
   const selfLeave = targetId === userId;

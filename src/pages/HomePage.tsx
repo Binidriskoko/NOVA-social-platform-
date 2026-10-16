@@ -73,6 +73,11 @@ export function HomePage() {
 
   useEffect(() => { void loadFeed() }, [])
 
+  useEffect(() => {
+    if (loading || !window.location.hash.startsWith('#post-')) return
+    document.getElementById(window.location.hash.slice(1))?.scrollIntoView({ block: 'start' })
+  }, [loading, posts])
+
   const closePostComposer = () => {
     setShowPostComposer(false)
     if (hasCreateQuery) {
@@ -298,6 +303,8 @@ export function HomePage() {
               </div>
             </div>
 
+            {postComposerOpen ? <PostComposer inline onClose={closePostComposer} onPublished={() => { closePostComposer(); void loadFeed() }} /> : null}
+
             <div className="mb-3 flex items-center justify-between">
               <div>
                 <h1 className="text-lg font-bold text-slate-900">Your Feed</h1>
@@ -380,7 +387,6 @@ export function HomePage() {
                     <p className="mt-1 text-xs text-slate-500">Discover live conversations and broadcasts.</p>
                   </Link>
                 </div>
-                {postComposerOpen ? <PostComposer onClose={closePostComposer} onPublished={() => { closePostComposer(); void loadFeed() }} /> : null}
               </div>
 
               <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">

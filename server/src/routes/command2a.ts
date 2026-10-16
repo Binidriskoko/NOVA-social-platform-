@@ -60,10 +60,10 @@ const liveViewerControlSchema = z.object({ isMuted: z.boolean() });
 async function canViewConversation(conversationId: string, userId: string) {
   const dbAvailable = await isDatabaseAvailable();
   if (dbAvailable) {
-    const participant = await prisma.conversationParticipant.findFirst({ where: { conversationId, userId }, select: { id: true } });
+    const participant = await prisma.conversationParticipant.findFirst({ where: { conversationId, userId, leftAt: null }, select: { id: true } });
     return Boolean(participant);
   }
-  return socialStore.state.conversationParticipants.some((participant) => participant.conversationId === conversationId && participant.userId === userId);
+  return socialStore.state.conversationParticipants.some((participant) => participant.conversationId === conversationId && participant.userId === userId && !participant.leftAt);
 }
 
 async function isBlocked(userId: string, targetUserId: string) {
@@ -180,7 +180,7 @@ command2aRouter.post('/calls/start', requireAuth, async (req, res) => {
     if (await isBlocked(userId, targetId)) return res.status(403).json({ message: 'You cannot call a user who has blocked you or who you have blocked.' });
   }
 
-  const call = createCallSession(userId, targetUserIds, payload.type);
+  const call = createCallSession(userId, targetUserIds, payload.type, payload.conversationId);
   return res.status(201).json({ call, message: 'Call started. Connecting to LiveKit.' });
 });
 

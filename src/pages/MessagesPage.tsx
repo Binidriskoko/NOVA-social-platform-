@@ -115,6 +115,7 @@ export function MessagesPage() {
   const [groupImagePreview, setGroupImagePreview] = useState('')
   const groupImagePreviewRef = useRef('')
   const [groupSettingsBusy, setGroupSettingsBusy] = useState(false)
+  const [groupActionBusy, setGroupActionBusy] = useState(false)
   const [selectedAddParticipants, setSelectedAddParticipants] = useState<string[]>([])
   const [isGroup, setIsGroup] = useState(false)
   const [groupName, setGroupName] = useState('')
@@ -346,7 +347,8 @@ export function MessagesPage() {
   }
 
   const addGroupMembers = async () => {
-    if (!activeConversation || !selectedAddParticipants.length) return
+    if (!activeConversation || !canManageActiveGroup || !selectedAddParticipants.length || groupActionBusy) return
+    setGroupActionBusy(true)
     try {
       setError('')
       await apiRequest(`/api/conversations/${encodeURIComponent(activeConversation.id)}/participants`, {
@@ -358,10 +360,13 @@ export function MessagesPage() {
       await loadConversations()
     } catch (addError) {
       setError(addError instanceof Error ? addError.message : 'Unable to add members to this group.')
+    } finally {
+      setGroupActionBusy(false)
     }
   }
   const changeGroupMemberRole = async (participant: ConversationParticipant) => {
-    if (!activeConversation || !participant.userId) return
+    if (!activeConversation || !canManageActiveGroup || !participant.userId || groupActionBusy) return
+    setGroupActionBusy(true)
     try {
       setError('')
       await apiRequest(`/api/conversations/${encodeURIComponent(activeConversation.id)}/participants/${encodeURIComponent(participant.userId)}`, {
@@ -371,6 +376,8 @@ export function MessagesPage() {
       await loadConversations()
     } catch (roleError) {
       setError(roleError instanceof Error ? roleError.message : 'Unable to update this member role.')
+    } finally {
+      setGroupActionBusy(false)
     }
   }
   const visibleConversations = useMemo(() => conversations
@@ -753,7 +760,9 @@ export function MessagesPage() {
               <header className="sticky top-0 z-10 flex min-h-14 items-center justify-between gap-1 border-b border-slate-200 bg-white px-1 py-2 shadow-sm">
                 <div className="flex min-w-0 items-center gap-3">
                   <button type="button" onClick={() => setSelectedId('')} aria-label="Back to chats" className="rounded-full p-2 text-slate-500 hover:bg-blue-50 lg:hidden"><ArrowLeft className="h-5 w-5" aria-hidden="true" /></button>
-                  <Avatar src={(activeConversation.isGroup ? resolveMediaUrl(activeConversation.imageUrl) : activePeer?.avatar) ?? ''} alt={activeConversation.name ?? activePeer?.name ?? 'Group'} size="md" />
+                  {activeConversation.isGroup && !activeConversation.isChannel
+                    ? <button type="button" onClick={() => openGroupProfile()} aria-label="Open group details" title="Open group details" className="shrink-0 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-600"><Avatar src={resolveMediaUrl(activeConversation.imageUrl)} alt={activeConversation.name ?? 'Group'} size="md" /></button>
+                    : <Avatar src={(activeConversation.isGroup ? resolveMediaUrl(activeConversation.imageUrl) : activePeer?.avatar) ?? ''} alt={activeConversation.name ?? activePeer?.name ?? 'Group'} size="md" />}
                   <div className="min-w-0">
                     {activeConversation.isGroup && !activeConversation.isChannel
                       ? <button type="button" onClick={() => openGroupProfile()} className="truncate text-left font-semibold text-slate-900 hover:text-indigo-700">{activeConversation.name ?? 'Group conversation'}</button>
@@ -960,7 +969,7 @@ export function MessagesPage() {
               </label>)}
               {directory.filter((person) => !activeConversation.participants.some((participant) => participant.userId === person.id)).length === 0 ? <p className="py-2 text-xs text-slate-500">Everyone is already in this group.</p> : null}
             </div>
-            <div className="mt-2 flex justify-end"><Button variant="primary" size="sm" disabled={!selectedAddParticipants.length} onClick={() => void addGroupMembers()}>Add selected</Button></div>
+            <div className="mt-2 flex justify-end"><Button variant="primary" size="sm" disabled={!selectedAddParticipants.length || groupActionBusy} onClick={() => void addGroupMembers()}>{groupActionBusy ? 'Adding…' : 'Add selected'}</Button></div>
           </section> : null}
 
           <ul className="mt-2 divide-y divide-slate-100">
@@ -968,7 +977,7 @@ export function MessagesPage() {
               <Avatar src={participant.user?.avatar ?? ''} alt={participant.user?.name ?? 'Member'} size="sm" />
               <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800">{participant.user?.name ?? participant.userId}{participant.userId === user?.id ? ' (you)' : ''}</span>
               <span className="text-xs text-slate-500">{participant.role === 'OWNER' ? 'Owner' : participant.role === 'MODERATOR' ? 'Admin' : 'Member'}</span>
-              {canManageActiveGroup && participant.userId !== user?.id && participant.role !== 'OWNER' ? <button type="button" onClick={() => void changeGroupMemberRole(participant)} className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50">{participant.role === 'MODERATOR' ? 'Remove admin' : 'Make admin'}</button> : null}
+              {canManageActiveGroup && participant.userId !== user?.id && participant.role !== 'OWNER' ? <button type="button" disabled={groupActionBusy} onClick={() => void changeGroupMemberRole(participant)} className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">{groupActionBusy ? 'Updating…' : participant.role === 'MODERATOR' ? 'Remove admin' : 'Make admin'}</button> : null}
             </li>)}
           </ul>
         </section>

@@ -44,6 +44,8 @@ export type CallSession = {
   participants: CallParticipantState[];
   provider: 'livekit';
   providerConfigured: boolean;
+  conversationId?: string | null;
+  connectedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -347,12 +349,13 @@ export function listCallHistory(userId: string) {
   return getStore().callSessions.filter((call) => call.participants.some((participant) => participant.userId === userId) && call.status !== 'cancelled');
 }
 
-export function createCallSession(callerId: string, targetUserIds: string[], type: CallType) {
+export function createCallSession(callerId: string, targetUserIds: string[], type: CallType, conversationId?: string) {
   const now = new Date().toISOString();
   const call: CallSession = {
     id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
     callerId,
     targetUserId: targetUserIds.length === 1 ? targetUserIds[0] : null,
+    conversationId: conversationId ?? null,
     type,
     status: 'ringing',
     participants: [
@@ -379,7 +382,10 @@ export function updateCallSession(callId: string, changes: Partial<Pick<CallSess
     return null;
   }
 
-  if (changes.status) session.status = changes.status;
+  if (changes.status) {
+    session.status = changes.status;
+    if (changes.status === 'connected') session.connectedAt ??= new Date().toISOString();
+  }
   if (changes.targetUserId !== undefined) session.targetUserId = changes.targetUserId;
   if (changes.type) session.type = changes.type;
 

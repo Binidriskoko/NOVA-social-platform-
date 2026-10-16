@@ -96,23 +96,27 @@ const canViewConversation = async (conversationId: string, userId: string) => {
 
   if (dbAvailable) {
     const participant = await prisma.conversationParticipant.findFirst({
-      where: { conversationId, userId },
+      where: { conversationId, userId, leftAt: null },
       select: { id: true },
     });
     return Boolean(participant);
   }
 
   return socialStore.state.conversationParticipants.some(
-    (participant) => participant.conversationId === conversationId && participant.userId === userId,
+    (participant) => participant.conversationId === conversationId && participant.userId === userId && !participant.leftAt,
   );
 };
 
 const listConversationParticipantIds = async (conversationId: string) => {
   if (await isDatabaseAvailable()) {
-    return (await prisma.conversationParticipant.findMany({ where: { conversationId }, select: { userId: true } })).map((participant) => participant.userId);
+    return (await prisma.conversationParticipant.findMany({ where: { conversationId, leftAt: null }, select: { userId: true } })).map((participant) => participant.userId);
   }
-  return socialStore.state.conversationParticipants.filter((participant) => participant.conversationId === conversationId).map((participant) => participant.userId);
+  return socialStore.state.conversationParticipants.filter((participant) => participant.conversationId === conversationId && !participant.leftAt).map((participant) => participant.userId);
 };
+
+const isConversationOwner = (conversation: { ownerId?: string | null }, userId: string) => conversation.ownerId === userId;
+const canManageGroupMembers = (conversation: { ownerId?: string | null }, participant: { role: string }, userId: string) =>
+  participant.role === 'OWNER' || isConversationOwner(conversation, userId) || participant.role === 'MODERATOR';
 
 const isBlocked = async (userId: string, targetUserId: string) => {
   const dbAvailable = await isDatabaseAvailable();
@@ -254,6 +258,7 @@ messagesRouter.post('/conversations', requireAuth, async (req, res) => {
     name: payload.name ?? null,
     description: payload.description ?? null,
     imageUrl: null,
+    ownerId: userId,
     isChannel: payload.isChannel ?? false,
     isGroup: payload.isGroup ?? (Boolean(payload.participantIds) || Boolean(payload.isChannel)),
     createdAt: new Date().toISOString(),
@@ -285,9 +290,9 @@ messagesRouter.get('/conversations', requireAuth, async (_req, res) => {
 
   if (dbAvailable) {
     const conversations = await prisma.conversation.findMany({
-      where: { participants: { some: { userId } } },
+      where: { participants: { some: { userId, leftAt: null } } },
       include: {
-        participants: { include: { user: { select: { id: true, name: true, profile: { select: { avatarUrl: true } } } } } },
+        participants: { where: { leftAt: null }, include: { user: { select: { id: true, name: true, profile: { select: { avatarUrl: true } } } } } },
         messages: { orderBy: { createdAt: 'desc' }, take: 1 },
         _count: { select: { messages: { where: { senderId: { not: userId }, readAt: null, deletedAt: null, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] } } } },
       },
@@ -311,7 +316,7 @@ messagesRouter.get('/conversations', requireAuth, async (_req, res) => {
         starredAt: currentParticipant?.starredAt ?? null,
         mutedUntil: currentParticipant?.mutedUntil ?? null,
         unreadCount: conversation._count.messages,
-        participants: conversation.participants.map((participant) => ({ id: participant.id, userId: participant.userId, role: participant.role, user: { id: participant.user.id, name: participant.user.name, avatar: participant.user.profile?.avatarUrl ?? '' } })),
+        participants: conversation.participants.map((participant) => ({ id: participant.id, userId: participant.userId, role: conversation.ownerId === participant.userId ? 'OWNER' : participant.role, user: { id: participant.user.id, name: participant.user.name, avatar: participant.user.profile?.avatarUrl ?? '' } })),
         lastMessage: conversation.messages[0] ? messageToPublicShape(conversation.messages[0]) : null,
       };
     }) });
@@ -319,11 +324,11 @@ messagesRouter.get('/conversations', requireAuth, async (_req, res) => {
 
   const conversations = socialStore.state.conversations.filter((conversation) => {
     const participants = socialStore.state.conversationParticipants.filter((participant) => participant.conversationId === conversation.id);
-    return participants.some((participant) => participant.userId === userId);
+    return participants.some((participant) => participant.userId === userId && !participant.leftAt);
   });
 
   return res.json({ conversations: conversations.map((conversation) => {
-    const participants = socialStore.state.conversationParticipants.filter((participant) => participant.conversationId === conversation.id);
+    const participants = socialStore.state.conversationParticipants.filter((participant) => participant.conversationId === conversation.id && !participant.leftAt);
     const currentParticipant = participants.find((participant) => participant.userId === userId);
     return {
       ...conversation,
@@ -336,6 +341,7 @@ messagesRouter.get('/conversations', requireAuth, async (_req, res) => {
       unreadCount: socialStore.state.messages.filter((message) => message.conversationId === conversation.id && message.senderId !== userId && !message.readAt && !message.deletedAt && (!message.expiresAt || new Date(message.expiresAt).getTime() > Date.now())).length,
       participants: participants.map((participant) => ({
         ...participant,
+        role: conversation.ownerId === participant.userId ? 'OWNER' : participant.role,
         user: findUserById(participant.userId) ? { id: participant.userId, name: findUserById(participant.userId)!.name, avatar: socialStore.state.profiles.find((profile) => profile.userId === participant.userId)?.avatarUrl ?? '' } : undefined,
       })),
       lastMessage: socialStore.state.messages
@@ -980,29 +986,40 @@ const { participantIds } = validation.data;
   const dbAvailable = await isDatabaseAvailable();
   if (dbAvailable) {
     const actor = await prisma.conversationParticipant.findFirst({ where: { conversationId, userId, leftAt: null }, select: { role: true } });
-    const conversation = await prisma.conversation.findUnique({ where: { id: conversationId }, select: { id: true, isGroup: true, isChannel: true } });
+    const conversation = await prisma.conversation.findUnique({ where: { id: conversationId }, select: { id: true, ownerId: true, isGroup: true, isChannel: true } });
     if (!actor || !conversation) return res.status(404).json({ message: 'Conversation not found.' });
     if (!conversation.isGroup && !conversation.isChannel) return res.status(400).json({ message: 'Members can only be added to group conversations.' });
-    const canAddParticipants = conversation.isChannel ? actor.role === 'OWNER' : actor.role === 'OWNER' || actor.role === 'MODERATOR';
+    const isOwner = actor.role === 'OWNER' || isConversationOwner(conversation, userId);
+    const canAddParticipants = conversation.isChannel ? isOwner : canManageGroupMembers(conversation, actor, userId);
     if (!canAddParticipants) return res.status(403).json({ message: conversation.isChannel ? 'Only channel owners can add participants.' : 'Only group admins can add participants.' });
     const found = await prisma.user.findMany({ where: { id: { in: participantIds } }, select: { id: true } });
     if (found.length !== participantIds.length) return res.status(404).json({ message: 'User not found.' });
-    const currentParticipants = await prisma.conversationParticipant.findMany({ where: { conversationId, userId: { in: participantIds } }, select: { userId: true } });
-    const newParticipantIds = participantIds.filter((targetId) => !currentParticipants.some((participant) => participant.userId === targetId));
+    const currentParticipants = await prisma.conversationParticipant.findMany({ where: { conversationId, userId: { in: participantIds } }, select: { id: true, userId: true, leftAt: true } });
+    const newParticipantIds = participantIds.filter((targetId) => !currentParticipants.some((participant) => participant.userId === targetId && participant.leftAt === null));
     for (const targetId of newParticipantIds) if (await isBlocked(userId, targetId)) return res.status(403).json({ message: 'You cannot add a blocked user.' });
-    await prisma.conversationParticipant.createMany({ data: newParticipantIds.map((targetId) => ({ conversationId, userId: targetId, role: 'MEMBER' })), skipDuplicates: true });
+    const rejoining = currentParticipants.filter((participant) => participant.leftAt !== null && newParticipantIds.includes(participant.userId));
+    for (const participant of rejoining) {
+      await prisma.conversationParticipant.update({ where: { id: participant.id }, data: { leftAt: null, role: 'MEMBER', joinedAt: new Date() } });
+    }
+    const newMemberships = newParticipantIds.filter((targetId) => !rejoining.some((participant) => participant.userId === targetId));
+    if (newMemberships.length) await prisma.conversationParticipant.createMany({ data: newMemberships.map((targetId) => ({ conversationId, userId: targetId, role: 'MEMBER' })), skipDuplicates: true });
     return res.status(201).json({ added: newParticipantIds });
   }
-  const actor = socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === userId);
+  const actor = socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === userId && !entry.leftAt);
   const conversation = socialStore.state.conversations.find((entry) => entry.id === conversationId);
   if (!actor || !conversation) return res.status(404).json({ message: 'Conversation not found.' });
   if (!conversation.isGroup && !conversation.isChannel) return res.status(400).json({ message: 'Members can only be added to group conversations.' });
-  const canAddParticipants = conversation.isChannel ? actor.role === 'OWNER' : actor.role === 'OWNER' || actor.role === 'MODERATOR';
+  const isOwner = actor.role === 'OWNER' || isConversationOwner(conversation, userId);
+  const canAddParticipants = conversation.isChannel ? isOwner : canManageGroupMembers(conversation, actor, userId);
   if (!canAddParticipants) return res.status(403).json({ message: conversation.isChannel ? 'Only channel owners can add participants.' : 'Only group admins can add participants.' });
   for (const targetId of participantIds) if (!findUserById(targetId)) return res.status(404).json({ message: 'User not found.' });
-  const newParticipantIds = participantIds.filter((targetId) => !socialStore.state.conversationParticipants.some((entry) => entry.conversationId === conversationId && entry.userId === targetId));
+  const newParticipantIds = participantIds.filter((targetId) => !socialStore.state.conversationParticipants.some((entry) => entry.conversationId === conversationId && entry.userId === targetId && !entry.leftAt));
   for (const targetId of newParticipantIds) if (await isBlocked(userId, targetId)) return res.status(403).json({ message: 'You cannot add a blocked user.' });
-  for (const targetId of newParticipantIds) socialStore.state.conversationParticipants.push({ id: `participant_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, conversationId, userId: targetId, role: 'MEMBER', joinedAt: new Date().toISOString(), lastReadAt: null, leftAt: null });
+  for (const targetId of newParticipantIds) {
+    const former = socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === targetId);
+    if (former) Object.assign(former, { role: 'MEMBER', joinedAt: new Date().toISOString(), leftAt: null });
+    else socialStore.state.conversationParticipants.push({ id: `participant_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, conversationId, userId: targetId, role: 'MEMBER', joinedAt: new Date().toISOString(), lastReadAt: null, leftAt: null });
+  }
   return res.status(201).json({ added: newParticipantIds });
 });
 
@@ -1014,15 +1031,15 @@ messagesRouter.patch('/conversations/:id/group', requireAuth, async (req, res) =
   const userId = req.user!.id;
   const dbAvailable = await isDatabaseAvailable();
   const conversation = dbAvailable
-    ? await prisma.conversation.findUnique({ where: { id: conversationId }, select: { id: true, isGroup: true, isChannel: true } })
+    ? await prisma.conversation.findUnique({ where: { id: conversationId }, select: { id: true, ownerId: true, isGroup: true, isChannel: true } })
     : socialStore.state.conversations.find((entry) => entry.id === conversationId);
   const actor = dbAvailable
     ? await prisma.conversationParticipant.findFirst({ where: { conversationId, userId, leftAt: null }, select: { role: true } })
-    : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === userId);
+    : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === userId && !entry.leftAt);
 
   if (!conversation || !actor) return res.status(404).json({ message: 'Group conversation not found.' });
   if (!conversation.isGroup || conversation.isChannel) return res.status(400).json({ message: 'Only group conversations have group profile settings.' });
-  if (actor.role !== 'OWNER' && actor.role !== 'MODERATOR') return res.status(403).json({ message: 'Only group admins can update group settings.' });
+  if (!canManageGroupMembers(conversation, actor, userId)) return res.status(403).json({ message: 'Only group admins can update group settings.' });
 
   const { name, description, imageUrl } = validation.data;
   if (imageUrl && !(await uploadedMediaBelongsTo(imageUrl, userId, process.env.NODE_ENV ?? 'development'))) {
@@ -1047,17 +1064,18 @@ messagesRouter.patch('/conversations/:id/participants/:userId', requireAuth, asy
   const { role } = roleSchema.parse(req.body ?? {});
   const dbAvailable = await isDatabaseAvailable();
   const conversation = dbAvailable
-    ? await prisma.conversation.findUnique({ where: { id: conversationId }, select: { isGroup: true, isChannel: true } })
+    ? await prisma.conversation.findUnique({ where: { id: conversationId }, select: { ownerId: true, isGroup: true, isChannel: true } })
     : socialStore.state.conversations.find((entry) => entry.id === conversationId);
   const actor = dbAvailable
     ? await prisma.conversationParticipant.findFirst({ where: { conversationId, userId: req.user!.id, leftAt: null }, select: { role: true } })
-    : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === req.user!.id);
+    : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === req.user!.id && !entry.leftAt);
   const target = dbAvailable
     ? await prisma.conversationParticipant.findFirst({ where: { conversationId, userId: targetId, leftAt: null } })
-    : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === targetId);
+    : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === targetId && !entry.leftAt);
   if (!conversation || !actor || !target) return res.status(404).json({ message: 'Conversation member not found.' });
   if (!conversation.isGroup && !conversation.isChannel) return res.status(400).json({ message: 'Roles can only be changed in group conversations.' });
-  const canManageRoles = conversation.isChannel ? actor.role === 'OWNER' : actor.role === 'OWNER' || actor.role === 'MODERATOR';
+  const isOwner = actor.role === 'OWNER' || isConversationOwner(conversation, req.user!.id);
+  const canManageRoles = conversation.isChannel ? isOwner : canManageGroupMembers(conversation, actor, req.user!.id);
   if (!canManageRoles) return res.status(403).json({ message: conversation.isChannel ? 'Only channel owners can change member roles.' : 'Only group admins can change member roles.' });
   if (target.role === 'OWNER') return res.status(409).json({ message: 'The owner role cannot be changed.' });
   if (dbAvailable) return res.json({ participant: await prisma.conversationParticipant.update({ where: { conversationId_userId: { conversationId, userId: targetId } }, data: { role } }) });
@@ -1072,7 +1090,7 @@ messagesRouter.delete('/conversations/:id/participants/:userId', requireAuth, as
   const dbAvailable = await isDatabaseAvailable();
   const actor = dbAvailable
     ? await prisma.conversationParticipant.findFirst({ where: { conversationId, userId, leftAt: null }, select: { role: true } })
-    : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === userId);
+    : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === userId && !entry.leftAt);
   const target = dbAvailable
     ? await prisma.conversationParticipant.findFirst({ where: { conversationId, userId: targetId, leftAt: null } })
     : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === targetId);

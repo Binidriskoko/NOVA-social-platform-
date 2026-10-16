@@ -1,4 +1,4 @@
-import { ArrowRight, Plus } from 'lucide-react'
+import { ArrowRight, ChevronLeft, ChevronRight, Plus, Send, X } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { PostComposer } from '../components/PostComposer'
@@ -6,6 +6,7 @@ import { PostCard } from '../components/PostCard'
 import { Avatar } from '../components/ui/Avatar'
 import { useAuth } from '../context/AuthContext'
 import { apiRequest, resolveMediaUrl, uploadMedia } from '../lib/api'
+import { isVideoStoryMedia, sendStoryReply } from '../lib/storyReplies'
 import type { Post } from '../types'
 
 type StoryRecord = {
@@ -53,6 +54,12 @@ export function HomePage() {
   const [uploadedStoryMediaUrl, setUploadedStoryMediaUrl] = useState('')
   const [storyBusy, setStoryBusy] = useState(false)
   const [activeStory, setActiveStory] = useState<StoryRecord | null>(null)
+  const [storyProgress, setStoryProgress] = useState(0)
+  const [storyReplyDraft, setStoryReplyDraft] = useState('')
+  const [storyReplyBusy, setStoryReplyBusy] = useState(false)
+  const [storyReplyError, setStoryReplyError] = useState('')
+  const [storyReplyNotice, setStoryReplyNotice] = useState('')
+  const [storyViewerError, setStoryViewerError] = useState('')
   const [showPostComposer, setShowPostComposer] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const hasCreateQuery = searchParams.get('create') === '1'
@@ -140,15 +147,61 @@ export function HomePage() {
   }
 
   const openStory = async (story: StoryRecord) => {
+    setStoryViewerError('')
     try {
       const response = await apiRequest<{ viewed: boolean; viewCount: number }>(`/api/stories/${encodeURIComponent(story.id)}/view`, { method: 'POST' })
       const updatedStory = { ...story, viewedByMe: true, viewCount: response.viewCount }
       setStories((current) => current.map((item) => item.id === story.id ? updatedStory : item))
+      setStoryProgress(0)
       setActiveStory(updatedStory)
     } catch (viewError) {
-      setStoriesError(viewError instanceof Error ? viewError.message : 'Unable to open this story.')
+      const message = viewError instanceof Error ? viewError.message : 'Unable to open this story.'
+      setStoriesError(message)
+      setStoryViewerError(message)
     }
   }
+
+  const closeStory = () => {
+    setActiveStory(null)
+    setStoryProgress(0)
+    setStoryReplyDraft('')
+    setStoryReplyError('')
+    setStoryReplyNotice('')
+    setStoryViewerError('')
+  }
+
+  const stepStory = (direction: -1 | 1) => {
+    if (!activeStory) return
+    const currentIndex = stories.findIndex((story) => story.id === activeStory.id)
+    const nextStory = stories[currentIndex + direction]
+    if (nextStory) void openStory(nextStory)
+  }
+
+  const submitStoryReply = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!activeStory || storyReplyBusy || !storyReplyDraft.trim()) return
+    setStoryReplyBusy(true)
+    setStoryReplyError('')
+    setStoryReplyNotice('')
+    try {
+      await sendStoryReply(activeStory.authorId, storyReplyDraft, apiRequest)
+      setStoryReplyDraft('')
+      setStoryReplyNotice('Reply sent to your conversation.')
+    } catch (replyError) {
+      setStoryReplyError(replyError instanceof Error ? replyError.message : 'Unable to send your story reply.')
+    } finally {
+      setStoryReplyBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!activeStory || isVideoStoryMedia(activeStory.mediaUrl)) return
+    const startedAt = Date.now()
+    const timer = window.setInterval(() => {
+      setStoryProgress(Math.min(100, ((Date.now() - startedAt) / 7000) * 100))
+    }, 100)
+    return () => window.clearInterval(timer)
+  }, [activeStory])
 
   const deleteStory = async (story: StoryRecord) => {
     try {
@@ -228,13 +281,49 @@ export function HomePage() {
           </form> : null}
         </section>
 
-        {activeStory ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-label={`${activeStory.author.name}'s story`}>
-          <div className="relative flex max-h-[90dvh] w-full max-w-md flex-col overflow-hidden rounded-2xl bg-slate-950 text-white">
-            {activeStory.mediaUrl ? <img src={resolveMediaUrl(activeStory.mediaUrl)} crossOrigin={activeStory.mediaUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} alt="Story" className="max-h-[70dvh] w-full object-contain" /> : null}
-            <div className="p-4"><p className="font-semibold">{activeStory.author.name}</p>{activeStory.text ? <p className="mt-2 whitespace-pre-wrap text-sm">{activeStory.text}</p> : null}<p className="mt-2 text-xs text-slate-300">{activeStory.viewCount} views</p></div>
-            <button type="button" onClick={() => setActiveStory(null)} aria-label="Close story" className="absolute right-3 top-3 rounded-full bg-black/60 px-3 py-2 text-sm">Close</button>
-            {activeStory.authorId === user?.id ? <button type="button" onClick={() => void deleteStory(activeStory)} className="m-3 rounded-xl border border-white/30 px-3 py-2 text-sm font-semibold">Delete story</button> : null}
-          </div>
+        {activeStory ? <div className="fixed inset-0 z-50 flex h-[100dvh] items-center justify-center bg-black text-white" role="dialog" aria-modal="true" aria-label={`${activeStory.author.name}'s story`}>
+          <section className="relative flex h-full w-full max-w-lg flex-col overflow-hidden bg-slate-950 pt-[env(safe-area-inset-top,1rem)] pb-[env(safe-area-inset-bottom,1rem)] sm:max-h-[94dvh] sm:rounded-2xl">
+            <div className="absolute inset-0">
+              {activeStory.mediaUrl && isVideoStoryMedia(activeStory.mediaUrl)
+                ? <video key={activeStory.id} src={resolveMediaUrl(activeStory.mediaUrl)} crossOrigin={activeStory.mediaUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} autoPlay muted playsInline controls onTimeUpdate={(event) => {
+                  const video = event.currentTarget
+                  if (video.duration) setStoryProgress(video.currentTime / video.duration * 100)
+                }} onEnded={() => stepStory(1)} className="h-full w-full object-cover" />
+                : activeStory.mediaUrl
+                  ? <img src={resolveMediaUrl(activeStory.mediaUrl)} crossOrigin={activeStory.mediaUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} alt="" className="h-full w-full object-cover" />
+                  : <div className="h-full w-full bg-gradient-to-br from-indigo-600 via-blue-800 to-slate-950" />}
+              <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-transparent to-black/75" />
+            </div>
+            <div className="relative z-10 flex min-h-0 flex-1 flex-col px-4">
+              <div className="flex gap-1 pt-3" aria-label="Story progress">
+                <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/35"><div className="h-full bg-white transition-[width] duration-100" style={{ width: `${storyProgress}%` }} /></div>
+              </div>
+              <header className="mt-3 flex items-center gap-3">
+                <Avatar src={activeStory.author.avatar} alt={activeStory.author.name} size="sm" />
+                <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{activeStory.author.name}</p><p className="text-xs text-white/75">{new Date(activeStory.createdAt).toLocaleString()}</p></div>
+                {activeStory.authorId === user?.id ? <button type="button" onClick={() => void deleteStory(activeStory)} className="rounded-lg px-2 py-2 text-xs font-semibold hover:bg-white/15">Delete</button> : null}
+                <button type="button" onClick={closeStory} aria-label="Close story" className="rounded-full p-2 hover:bg-white/15"><X className="h-5 w-5" aria-hidden="true" /></button>
+              </header>
+              {storyViewerError ? <p role="alert" className="mt-3 rounded-lg bg-rose-950/75 px-3 py-2 text-center text-xs text-rose-100">{storyViewerError}</p> : null}
+              <div className="my-auto flex items-center justify-between gap-3">
+                <button type="button" onClick={() => stepStory(-1)} disabled={stories.findIndex((story) => story.id === activeStory.id) <= 0} aria-label="Previous story" className="rounded-full bg-black/35 p-2 disabled:invisible"><ChevronLeft className="h-6 w-6" aria-hidden="true" /></button>
+                <div className="max-h-[55dvh] min-w-0 flex-1 overflow-y-auto text-center">
+                  {activeStory.text ? <p className="whitespace-pre-wrap break-words text-lg font-medium drop-shadow sm:text-xl">{activeStory.text}</p> : null}
+                  {activeStory.authorId === user?.id ? <p className="mt-3 text-xs text-white/80">{activeStory.viewCount} views</p> : null}
+                </div>
+                <button type="button" onClick={() => stepStory(1)} disabled={stories.findIndex((story) => story.id === activeStory.id) >= stories.length - 1} aria-label="Next story" className="rounded-full bg-black/35 p-2 disabled:invisible"><ChevronRight className="h-6 w-6" aria-hidden="true" /></button>
+              </div>
+              {activeStory.authorId !== user?.id ? <div className="mt-auto pb-4">
+                {storyReplyNotice ? <p className="mb-2 text-center text-sm text-emerald-200" role="status">{storyReplyNotice}</p> : null}
+                {storyReplyError ? <p className="mb-2 text-center text-sm text-rose-200" role="alert">{storyReplyError}</p> : null}
+                <form onSubmit={(event) => void submitStoryReply(event)} className="flex items-center gap-2 rounded-full border border-white/40 bg-black/40 p-1.5 pl-4 backdrop-blur">
+                  <input aria-label={`Reply to ${activeStory.author.name}'s story`} value={storyReplyDraft} onChange={(event) => setStoryReplyDraft(event.target.value)} maxLength={1000} placeholder="Reply to story…" className="min-w-0 flex-1 bg-transparent py-2 text-sm text-white outline-none placeholder:text-white/70" />
+                  <button type="submit" aria-label="Send story reply" disabled={storyReplyBusy || !storyReplyDraft.trim()} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-600 text-white disabled:opacity-50"><Send className="h-4 w-4" aria-hidden="true" /></button>
+                </form>
+                {storyReplyBusy ? <p className="mt-2 text-center text-xs text-white/80">Sending reply…</p> : null}
+              </div> : null}
+            </div>
+          </section>
         </div> : null}
 
         <div className="grid w-full gap-4 lg:grid-cols-[240px_minmax(0,1fr)_260px]">

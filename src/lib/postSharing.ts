@@ -5,6 +5,7 @@ export type PostShareDetails = {
 }
 
 export type PostShareResult = 'shared' | 'copied' | 'cancelled'
+export type ShareMessageApiRequest = <T>(path: string, options?: RequestInit) => Promise<T>
 
 export async function copyTextToClipboard(text: string) {
   if (navigator.clipboard?.writeText) {
@@ -34,4 +35,16 @@ export async function sharePostLink(details: PostShareDetails): Promise<PostShar
   }
   await copyTextToClipboard(details.url)
   return 'copied'
+}
+
+export async function sendPostToConversation(
+  conversationId: string,
+  authorName: string,
+  postUrl: string,
+  request: ShareMessageApiRequest,
+) {
+  await request(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ text: `Check out this post by ${authorName}: ${postUrl}` }),
+  })
 }

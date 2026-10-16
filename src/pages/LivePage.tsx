@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { Headphones, Radio, Users } from 'lucide-react'
+import { Headphones, Radio, RefreshCw, Users } from 'lucide-react'
 import { Room, RoomEvent, Track, type RemoteTrack } from 'livekit-client'
 import { Button } from '../components/ui/Button'
 import { useAuth } from '../context/AuthContext'
 import { apiRequest } from '../lib/api'
 import { openAuthenticatedEventStream } from '../lib/eventStream'
+import { cameraSwitchErrorMessage, switchToNextCamera } from '../lib/cameraSwitching'
 
 type LiveComment = { id: string; userId: string; text: string; createdAt: string }
 type LiveSession = {
@@ -47,6 +48,7 @@ export function LivePage() {
   const [remoteTracks, setRemoteTracks] = useState<Array<{ key: string; track: RemoteTrack }>>([])
   const [hostMuted, setHostMuted] = useState(false)
   const [hostCameraOn, setHostCameraOn] = useState(true)
+  const [cameraSwitchBusy, setCameraSwitchBusy] = useState(false)
   const [needsAudioPlayback, setNeedsAudioPlayback] = useState(false)
   const [needsVideoPlayback, setNeedsVideoPlayback] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -277,6 +279,26 @@ export function LivePage() {
     }
   }
 
+  const switchHostCamera = async () => {
+    const room = hostRoomRef.current
+    if (!room || !hostCameraOn || cameraSwitchBusy) return
+    setCameraSwitchBusy(true)
+    setError('')
+    try {
+      const cameraTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track
+      if (!cameraTrack) throw new Error('Your camera is not active. Turn it on before switching cameras.')
+      if (!navigator.mediaDevices?.enumerateDevices) throw new Error('This browser does not support camera device selection.')
+      const devices = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === 'videoinput')
+      const settings = cameraTrack.mediaStreamTrack.getSettings()
+      await switchToNextCamera(devices, room.getActiveDevice('videoinput') ?? settings.deviceId, settings.facingMode, (deviceId) =>
+        room.switchActiveDevice('videoinput', deviceId, true))
+    } catch (switchError) {
+      setError(cameraSwitchErrorMessage(switchError))
+    } finally {
+      setCameraSwitchBusy(false)
+    }
+  }
+
   const joinLive = async (live: LiveSession) => {
     setBusy(true)
     setError('')
@@ -421,7 +443,7 @@ export function LivePage() {
       </form>
 
       {hostLive && hostRoom ? <section className="rounded-2xl border border-indigo-200 bg-white p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold text-slate-900">Your live broadcast</h3><p className="text-sm text-slate-600">{hostLive.title}</p></div><div className="flex gap-2"><Button variant="secondary" size="sm" onClick={() => void toggleHostMute()}>{hostMuted ? 'Unmute' : 'Mute'}</Button><Button variant="secondary" size="sm" onClick={() => void toggleHostCamera()}>{hostCameraOn ? 'Turn camera off' : 'Turn camera on'}</Button><Button variant="secondary" size="sm" onClick={() => void endBroadcast(hostLive)} disabled={busy}>End broadcast</Button></div></div>
+        <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold text-slate-900">Your live broadcast</h3><p className="text-sm text-slate-600">{hostLive.title}</p></div><div className="flex flex-wrap gap-2"><Button variant="secondary" size="sm" onClick={() => void toggleHostMute()}>{hostMuted ? 'Unmute' : 'Mute'}</Button><Button variant="secondary" size="sm" onClick={() => void toggleHostCamera()}>{hostCameraOn ? 'Turn camera off' : 'Turn camera on'}</Button>{hostCameraOn ? <Button variant="secondary" size="sm" onClick={() => void switchHostCamera()} disabled={cameraSwitchBusy} icon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}>{cameraSwitchBusy ? 'Switching…' : 'Switch camera'}</Button> : null}<Button variant="secondary" size="sm" onClick={() => void endBroadcast(hostLive)} disabled={busy}>End broadcast</Button></div></div>
         {localVideoTrack ? <AttachedTrack track={localVideoTrack} muted className="mt-3 aspect-video w-full rounded-xl bg-slate-950 object-cover" /> : <div className="mt-3 aspect-video w-full rounded-xl bg-slate-950" />}
       </section> : null}
 

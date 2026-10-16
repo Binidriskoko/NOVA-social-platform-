@@ -115,6 +115,7 @@ export type ConversationRecord = {
   name: string | null;
   description?: string | null;
   imageUrl?: string | null;
+  ownerId?: string | null;
   createdAt: string;
   updatedAt: string;
   lastMessageAt: string | null;

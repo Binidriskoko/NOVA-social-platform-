@@ -69,6 +69,7 @@ describe('product area gaps', () => {
     expect((await request(app).post(`/api/conversations/${channelId}/participants`).set('Cookie', owner.auth).send({ participantIds: [guest.user.id] })).status).toBe(201);
     expect((await request(app).patch(`/api/conversations/${channelId}/participants/${moderator.user.id}`).set('Cookie', owner.auth).send({ role: 'MODERATOR' })).status).toBe(200);
     expect((await request(app).patch(`/api/conversations/${channelId}/participants/${guest.user.id}`).set('Cookie', moderator.auth).send({ role: 'MODERATOR' })).status).toBe(403);
+    expect((await request(app).post(`/api/conversations/${channelId}/participants`).set('Cookie', moderator.auth).send({ participantIds: [guest.user.id] })).status).toBe(403);
     expect((await request(app).post(`/api/conversations/${channelId}/messages`).set('Cookie', moderator.auth).send({ text: 'Official update' })).status).toBe(201);
     expect((await request(app).delete(`/api/conversations/${channelId}/participants/${guest.user.id}`).set('Cookie', moderator.auth)).status).toBe(200);
   });
@@ -87,6 +88,13 @@ describe('product area gaps', () => {
 
     expect((await request(app).get('/api/conversations').set('Cookie', owner.auth)).body.conversations.find((entry: { id: string }) => entry.id === groupId).isGroup).toBe(true);
     expect((await request(app).get(`/api/conversations/${groupId}`).set('Cookie', owner.auth)).body.conversation.participants.find((entry: { userId: string }) => entry.userId === owner.user.id).role).toBe('OWNER');
+    expect((await request(app).patch(`/api/conversations/${groupId}/group`).set('Cookie', member.auth).send({ name: 'Unauthorized rename' })).status).toBe(403);
+    const updatedGroup = await request(app).patch(`/api/conversations/${groupId}/group`).set('Cookie', owner.auth).send({
+      name: 'Small group profile',
+      description: 'Group information managed by admins.',
+    });
+    expect(updatedGroup.status).toBe(200);
+    expect(updatedGroup.body.group).toMatchObject({ name: 'Small group profile', description: 'Group information managed by admins.', imageUrl: null });
     expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', outsider.auth).send({ participantIds: [guest.user.id] })).status).toBe(404);
     expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', member.auth).send({ participantIds: [guest.user.id] })).status).toBe(403);
     expect((await request(app).patch(`/api/conversations/${groupId}/participants/${moderator.user.id}`).set('Cookie', member.auth).send({ role: 'MODERATOR' })).status).toBe(403);
@@ -96,6 +104,7 @@ describe('product area gaps', () => {
 
     const promoted = await request(app).patch(`/api/conversations/${groupId}/participants/${moderator.user.id}`).set('Cookie', owner.auth).send({ role: 'MODERATOR' });
     expect(promoted.status).toBe(200);
+    expect((await request(app).patch(`/api/conversations/${groupId}/group`).set('Cookie', moderator.auth).send({ description: 'Admin-maintained description.' })).status).toBe(200);
     expect((await request(app).patch(`/api/conversations/${groupId}/participants/${member.user.id}`).set('Cookie', moderator.auth).send({ role: 'MODERATOR' })).status).toBe(200);
     expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', moderator.auth).send({ participantIds: [outsider.user.id] })).body.added).toEqual([outsider.user.id]);
     expect((await request(app).patch(`/api/conversations/${groupId}/participants/${moderator.user.id}`).set('Cookie', outsider.auth).send({ role: 'MEMBER' })).status).toBe(403);

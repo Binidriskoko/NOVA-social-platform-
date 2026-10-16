@@ -1,6 +1,7 @@
 import { ArrowRight, Plus } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useEffect, useState } from 'react'
+import { PostComposer } from '../components/PostComposer'
 import { PostCard } from '../components/PostCard'
 import { Avatar } from '../components/ui/Avatar'
 import { useAuth } from '../context/AuthContext'
@@ -52,6 +53,10 @@ export function HomePage() {
   const [uploadedStoryMediaUrl, setUploadedStoryMediaUrl] = useState('')
   const [storyBusy, setStoryBusy] = useState(false)
   const [activeStory, setActiveStory] = useState<StoryRecord | null>(null)
+  const [showPostComposer, setShowPostComposer] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const hasCreateQuery = searchParams.get('create') === '1'
+  const postComposerOpen = showPostComposer || hasCreateQuery
 
   const loadFeed = async () => {
     setLoading(true)
@@ -67,6 +72,15 @@ export function HomePage() {
   }
 
   useEffect(() => { void loadFeed() }, [])
+
+  const closePostComposer = () => {
+    setShowPostComposer(false)
+    if (hasCreateQuery) {
+      const nextParams = new URLSearchParams(searchParams)
+      nextParams.delete('create')
+      setSearchParams(nextParams, { replace: true })
+    }
+  }
 
   const loadStories = async () => {
     try {
@@ -154,6 +168,9 @@ export function HomePage() {
           </Link>
           <Link to="/messages" className="shrink-0 rounded-full bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm">
             Messages
+          </Link>
+          <Link to="/videos" className="shrink-0 rounded-full bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm">
+            Videos
           </Link>
           <Link to="/communities?type=GROUP" className="shrink-0 rounded-full bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm">
             Groups
@@ -251,31 +268,33 @@ export function HomePage() {
           <main className="min-w-0">
             <div className="mb-3 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200">
               <div className="flex items-center gap-3">
-                <Link
-                  to="/create"
-                  className="flex min-w-0 flex-1 items-center rounded-full bg-slate-100 px-4 py-3 text-sm text-slate-500 hover:bg-slate-200"
+                <button
+                  type="button"
+                  onClick={() => setShowPostComposer(true)}
+                  className="flex min-w-0 flex-1 items-center rounded-full bg-slate-100 px-4 py-3 text-left text-sm text-slate-500 hover:bg-slate-200"
                 >
                   What&apos;s on your mind?
-                </Link>
-                <Link
-                  to="/create"
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPostComposer(true)}
                   className="hidden shrink-0 rounded-full bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white sm:inline-flex"
                 >
                   <Plus className="mr-1 h-4 w-4" aria-hidden="true" />
                   Post
-                </Link>
+                </button>
               </div>
 
               <div className="mt-3 grid grid-cols-3 border-t border-slate-100 pt-3">
-                <Link to="/create" className="py-2 text-center text-xs font-semibold text-slate-600 hover:bg-slate-50">
+                <button type="button" onClick={() => setShowPostComposer(true)} className="py-2 text-center text-xs font-semibold text-slate-600 hover:bg-slate-50">
                   Photo / Video
-                </Link>
+                </button>
                 <Link to="/live" className="py-2 text-center text-xs font-semibold text-slate-600 hover:bg-slate-50">
                   Live
                 </Link>
-                <Link to="/create" className="py-2 text-center text-xs font-semibold text-slate-600 hover:bg-slate-50">
+                <button type="button" onClick={() => setShowPostComposer(true)} className="py-2 text-center text-xs font-semibold text-slate-600 hover:bg-slate-50">
                   Create Post
-                </Link>
+                </button>
               </div>
             </div>
 
@@ -324,10 +343,10 @@ export function HomePage() {
               <div className="rounded-2xl bg-white p-8 text-center shadow-sm ring-1 ring-slate-200">
                 <p className="font-semibold text-slate-800">Your feed starts here</p>
                 <p className="mt-1 text-sm text-slate-500">Create your first post or discover people to follow.</p>
-                <Link to="/create" className="mt-4 inline-flex items-center gap-2 rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white">
+                <button type="button" onClick={() => setShowPostComposer(true)} className="mt-4 inline-flex items-center gap-2 rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white">
                   Create a post
                   <Plus className="h-4 w-4" aria-hidden="true" />
-                </Link>
+                </button>
               </div>
             ) : null}
 
@@ -361,6 +380,7 @@ export function HomePage() {
                     <p className="mt-1 text-xs text-slate-500">Discover live conversations and broadcasts.</p>
                   </Link>
                 </div>
+                {postComposerOpen ? <PostComposer onClose={closePostComposer} onPublished={() => { closePostComposer(); void loadFeed() }} /> : null}
               </div>
 
               <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">

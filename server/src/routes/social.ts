@@ -7,10 +7,10 @@ import { socialStore } from '../lib/socialStore.js';
 import { reviewContentForSafety } from '../lib/moderation.js';
 import { isNotificationEnabled } from '../lib/platform.js';
 import { requireAuth, requireActiveAccountIfAuthenticated } from '../middleware/auth.js';
-import { mediaKeyFromUrl, uploadedMediaBelongsTo } from '../lib/mediaStorage.js';
+import { mediaKeyFromUrl, uploadedMediaBelongsTo, uploadedVideoBelongsTo, videoMediaKeyFromUrl } from '../lib/mediaStorage.js';
 
 function isSafeMediaUrl(value: string) {
-  if (value === '' || mediaKeyFromUrl(value)) return true;
+  if (value === '' || mediaKeyFromUrl(value) || videoMediaKeyFromUrl(value)) return true;
   try {
     return new URL(value).protocol === 'https:';
   } catch {
@@ -30,7 +30,7 @@ const updateProfileSchema = z.object({
 
 const createPostSchema = z.object({
   content: z.string().trim().min(1).max(2500),
-  imageUrl: z.string().trim().max(500).refine(isSafeMediaUrl, 'Use an HTTPS image URL or an uploaded NOVAKOKO image.').optional(),
+  imageUrl: z.string().trim().max(500).refine(isSafeMediaUrl, 'Use an HTTPS image URL or an uploaded NOVAKOKO image or video.').optional(),
   visibility: z.enum(['PUBLIC', 'FOLLOWERS', 'PRIVATE']).default('PUBLIC'),
 });
 
@@ -41,7 +41,7 @@ const createStorySchema = z.object({
 
 const updatePostSchema = z.object({
   content: z.string().trim().min(1).max(2500).optional(),
-  imageUrl: z.string().trim().max(500).refine(isSafeMediaUrl, 'Use an HTTPS image URL or an uploaded NOVAKOKO image.').optional(),
+  imageUrl: z.string().trim().max(500).refine(isSafeMediaUrl, 'Use an HTTPS image URL or an uploaded NOVAKOKO image or video.').optional(),
   visibility: z.enum(['PUBLIC', 'FOLLOWERS', 'PRIVATE']).optional(),
 });
 
@@ -758,8 +758,14 @@ socialRouter.delete('/users/:id/follow', requireAuth, requireAccountAccess, asyn
 socialRouter.post('/posts', requireAuth, requireAccountAccess, async (req, res) => {
   const payload = createPostSchema.parse(req.body ?? {});
   const userId = req.user!.id;
-  if (payload.imageUrl && !(await uploadedMediaBelongsTo(payload.imageUrl, userId, process.env.NODE_ENV ?? 'development'))) {
-    return res.status(403).json({ message: 'You can only publish images that you uploaded.' });
+  if (payload.imageUrl) {
+    const nodeEnv = process.env.NODE_ENV ?? 'development';
+    const ownsUploadedMedia = videoMediaKeyFromUrl(payload.imageUrl)
+      ? await uploadedVideoBelongsTo(payload.imageUrl, userId, nodeEnv)
+      : await uploadedMediaBelongsTo(payload.imageUrl, userId, nodeEnv);
+    if (!ownsUploadedMedia) {
+      return res.status(403).json({ message: 'You can only publish media that you uploaded.' });
+    }
   }
 
   const moderation = reviewContentForSafety({ type: 'post', text: payload.content, userId });
@@ -868,8 +874,14 @@ socialRouter.patch('/posts/:id', requireAuth, requireAccountAccess, async (req, 
   const postId = String(req.params.id);
   const payload = updatePostSchema.parse(req.body ?? {});
   const userId = req.user!.id;
-  if (payload.imageUrl && !(await uploadedMediaBelongsTo(payload.imageUrl, userId, process.env.NODE_ENV ?? 'development'))) {
-    return res.status(403).json({ message: 'You can only use images that you uploaded.' });
+  if (payload.imageUrl) {
+    const nodeEnv = process.env.NODE_ENV ?? 'development';
+    const ownsUploadedMedia = videoMediaKeyFromUrl(payload.imageUrl)
+      ? await uploadedVideoBelongsTo(payload.imageUrl, userId, nodeEnv)
+      : await uploadedMediaBelongsTo(payload.imageUrl, userId, nodeEnv);
+    if (!ownsUploadedMedia) {
+      return res.status(403).json({ message: 'You can only use media that you uploaded.' });
+    }
   }
   const dbAvailable = await isDatabaseAvailable();
   const post = dbAvailable

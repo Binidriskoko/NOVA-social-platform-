@@ -3,7 +3,6 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom
 import { AppShell } from './components/AppShell'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { CommunitiesPage } from './pages/CommunitiesPage'
-import { CreatePage } from './pages/CreatePage'
 import { ExplorePage } from './pages/ExplorePage'
 import { HomePage } from './pages/HomePage'
 import { MessagesPage } from './pages/MessagesPage'
@@ -15,6 +14,7 @@ import { AdminPage } from './pages/AdminPage'
 import { DownloadPage } from './pages/DownloadPage'
 import { AiPage } from './pages/AiPage'
 import { UpdatesPage } from './pages/UpdatesPage'
+import { VideosPage } from './pages/VideosPage'
 
 const LivePage = lazy(() => import('./pages/LivePage').then(({ LivePage: page }) => ({ default: page })))
 const CallsPage = lazy(() => import('./pages/CallsPage').then(({ CallsPage: page }) => ({ default: page })))
@@ -81,7 +81,8 @@ function AppRoutes() {
       <Route element={<ProtectedRoute />}>
         <Route path="/" element={<AppShell><HomePage /></AppShell>} />
         <Route path="/explore" element={<AppShell><ExplorePage /></AppShell>} />
-        <Route path="/create" element={<AppShell><CreatePage /></AppShell>} />
+        <Route path="/create" element={<Navigate to="/?create=1" replace />} />
+        <Route path="/videos" element={<AppShell><VideosPage /></AppShell>} />
         <Route path="/notifications" element={<AppShell><NotificationsPage /></AppShell>} />
         <Route path="/messages" element={<AppShell><MessagesPage /></AppShell>} />
         <Route path="/updates" element={<AppShell><UpdatesPage /></AppShell>} />

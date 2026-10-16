@@ -113,6 +113,8 @@ export type SocialBlockRecord = {
 export type ConversationRecord = {
   id: string;
   name: string | null;
+  description?: string | null;
+  imageUrl?: string | null;
   createdAt: string;
   updatedAt: string;
   lastMessageAt: string | null;

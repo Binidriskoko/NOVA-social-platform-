@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
-import { Archive, ArrowLeft, CalendarDays, Camera, Check, CheckCheck, CircleDot, FileText, Image, Images, ListChecks, MapPin, MessageCircleMore, Mic, MoreVertical, Paperclip, Phone, Pin, Search, SendHorizontal, Shield, Smile, Square, Star, UsersRound, UserPlus, Video, VolumeX, X } from 'lucide-react'
+import { Archive, ArrowLeft, CalendarDays, Camera, Check, CheckCheck, FileText, Image, Images, ListChecks, MapPin, Mic, MoreVertical, Paperclip, Phone, Pin, Search, SendHorizontal, Shield, Smile, Square, Star, UsersRound, UserPlus, Video, VolumeX, X } from 'lucide-react'
 import { Avatar } from '../components/ui/Avatar'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -12,6 +12,8 @@ type ConversationParticipant = { userId: string; role?: string; user?: { id: str
 type ConversationListItem = {
   id: string
   name: string | null
+  description?: string | null
+  imageUrl?: string | null
   isGroup?: boolean
   isChannel?: boolean
   participants: ConversationParticipant[]
@@ -106,6 +108,13 @@ export function MessagesPage() {
   const [showNew, setShowNew] = useState(false)
   const [showAddMembers, setShowAddMembers] = useState(false)
   const [showManageMembers, setShowManageMembers] = useState(false)
+  const [showGroupProfile, setShowGroupProfile] = useState(false)
+  const [groupNameDraft, setGroupNameDraft] = useState('')
+  const [groupDescriptionDraft, setGroupDescriptionDraft] = useState('')
+  const [groupImageFile, setGroupImageFile] = useState<File | null>(null)
+  const [groupImagePreview, setGroupImagePreview] = useState('')
+  const groupImagePreviewRef = useRef('')
+  const [groupSettingsBusy, setGroupSettingsBusy] = useState(false)
   const [selectedAddParticipants, setSelectedAddParticipants] = useState<string[]>([])
   const [isGroup, setIsGroup] = useState(false)
   const [groupName, setGroupName] = useState('')
@@ -282,6 +291,60 @@ export function MessagesPage() {
 
   const activeConversation = useMemo(() => conversations.find((conversation) => conversation.id === selectedId) ?? null, [conversations, selectedId])
   const activePeer = useMemo(() => activeConversation?.participants.find((participant) => participant.userId !== user?.id)?.user ?? null, [activeConversation, user])
+  const currentParticipant = activeConversation?.participants.find((participant) => participant.userId === user?.id)
+  const canManageActiveMembers = Boolean(activeConversation?.isGroup && (
+    activeConversation.isChannel
+      ? currentParticipant?.role === 'OWNER'
+      : currentParticipant?.role === 'OWNER' || currentParticipant?.role === 'MODERATOR'
+  ))
+  const canManageActiveGroup = Boolean(activeConversation?.isGroup && !activeConversation.isChannel && (
+    currentParticipant?.role === 'OWNER' || currentParticipant?.role === 'MODERATOR'
+  ))
+
+  useEffect(() => () => {
+    if (groupImagePreviewRef.current) URL.revokeObjectURL(groupImagePreviewRef.current)
+  }, [])
+
+  const setGroupImage = (file?: File) => {
+    if (groupImagePreviewRef.current) URL.revokeObjectURL(groupImagePreviewRef.current)
+    groupImagePreviewRef.current = file ? URL.createObjectURL(file) : ''
+    setGroupImagePreview(groupImagePreviewRef.current)
+    setGroupImageFile(file ?? null)
+  }
+
+  const openGroupProfile = (openAddMembers = false) => {
+    if (!activeConversation) return
+    setGroupNameDraft(activeConversation.name ?? '')
+    setGroupDescriptionDraft(activeConversation.description ?? '')
+    setGroupImage()
+    setShowAddMembers(openAddMembers)
+    setSelectedAddParticipants([])
+    setShowGroupProfile(true)
+    if (openAddMembers && !directory.length) void loadDirectory()
+  }
+
+  const saveGroupProfile = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!activeConversation || !canManageActiveGroup || groupSettingsBusy) return
+    setGroupSettingsBusy(true)
+    setError('')
+    try {
+      const imageUrl = groupImageFile ? (await uploadMedia(groupImageFile)).mediaUrl : activeConversation.imageUrl ?? ''
+      const response = await apiRequest<{ group: { name: string | null; description: string | null; imageUrl: string | null } }>(`/api/conversations/${encodeURIComponent(activeConversation.id)}/group`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: groupNameDraft.trim(), description: groupDescriptionDraft.trim(), imageUrl }),
+      })
+      setConversations((current) => current.map((conversation) => conversation.id === activeConversation.id
+        ? { ...conversation, ...response.group }
+        : conversation))
+      setGroupImage()
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Unable to save group settings.')
+    } finally {
+      setGroupSettingsBusy(false)
+    }
+  }
+
   const addGroupMembers = async () => {
     if (!activeConversation || !selectedAddParticipants.length) return
     try {
@@ -661,7 +724,7 @@ export function MessagesPage() {
               const isGroupConversation = conversation.isGroup || conversation.participants.length > 2
               const time = lastMessage?.createdAt ?? conversation.lastMessageAt ?? conversation.updatedAt
               return (
-                <button key={conversation.id} type="button" onClick={() => { setSelectedId(conversation.id); setSearchResults(null) }} className={`flex w-full items-center gap-3 px-2 py-3 text-left transition ${selectedId === conversation.id ? 'bg-[#f2f8f3]' : 'hover:bg-slate-50'}`}>
+                <button key={conversation.id} type="button" onClick={() => { setSelectedId(conversation.id); setSearchResults(null); setShowGroupProfile(false); setShowAddMembers(false); setShowManageMembers(false) }} className={`flex w-full items-center gap-3 px-2 py-3 text-left transition ${selectedId === conversation.id ? 'bg-[#f2f8f3]' : 'hover:bg-slate-50'}`}>
                     <Avatar src={peer?.avatar ?? ''} alt={title} size="md" />
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center justify-between gap-2">
@@ -690,16 +753,19 @@ export function MessagesPage() {
               <header className="sticky top-0 z-10 flex min-h-14 items-center justify-between gap-1 border-b border-slate-200 bg-white px-1 py-2 shadow-sm">
                 <div className="flex min-w-0 items-center gap-3">
                   <button type="button" onClick={() => setSelectedId('')} aria-label="Back to chats" className="rounded-full p-2 text-slate-500 hover:bg-blue-50 lg:hidden"><ArrowLeft className="h-5 w-5" aria-hidden="true" /></button>
-                  <Avatar src={activePeer?.avatar ?? ''} alt={activeConversation.name ?? activePeer?.name ?? 'Group'} size="md" />
+                  <Avatar src={(activeConversation.isGroup ? resolveMediaUrl(activeConversation.imageUrl) : activePeer?.avatar) ?? ''} alt={activeConversation.name ?? activePeer?.name ?? 'Group'} size="md" />
                   <div className="min-w-0">
-                    <p className="truncate font-semibold text-slate-900">{activeConversation.name ?? activePeer?.name ?? 'Group conversation'}</p>
-                    {activePeer ? <Link to={`/profile/${encodeURIComponent(activePeer.id)}`} className="text-xs text-indigo-700">View profile</Link> : <p className="text-xs text-slate-500">{activeConversation.participants.length} members</p>}
+                    {activeConversation.isGroup && !activeConversation.isChannel
+                      ? <button type="button" onClick={() => openGroupProfile()} className="truncate text-left font-semibold text-slate-900 hover:text-indigo-700">{activeConversation.name ?? 'Group conversation'}</button>
+                      : <p className="truncate font-semibold text-slate-900">{activeConversation.name ?? activePeer?.name ?? 'Group conversation'}</p>}
+                    {activePeer && !activeConversation.isGroup ? <Link to={`/profile/${encodeURIComponent(activePeer.id)}`} className="text-xs text-indigo-700">View profile</Link> : <p className="text-xs text-slate-500">{activeConversation.participants.length} members</p>}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto">
-                  {activeConversation.isGroup && activeConversation.participants.some((participant) => participant.userId === user?.id && ['OWNER', 'MODERATOR'].includes(participant.role ?? '')) ? <>
-                    <button type="button" title="Manage group members" aria-label="Manage group members" aria-expanded={showManageMembers} onClick={() => setShowManageMembers((open) => !open)} className="rounded-full p-1.5 text-slate-600 hover:bg-slate-100"><Shield className="h-4 w-4" aria-hidden="true" /></button>
-                    <button type="button" title="Add group members" aria-label="Add group members" onClick={() => { setShowAddMembers((open) => !open); setSelectedAddParticipants([]); if (!directory.length) void loadDirectory() }} className="rounded-full p-1.5 text-[#078744] hover:bg-[#e8f5e9]"><UserPlus className="h-4 w-4" aria-hidden="true" /></button>
+                  {activeConversation.isGroup && !activeConversation.isChannel ? <button type="button" title="Group details" aria-label="Open group details" onClick={() => openGroupProfile()} className="rounded-full p-1.5 text-slate-600 hover:bg-slate-100"><UsersRound className="h-4 w-4" aria-hidden="true" /></button> : null}
+                  {canManageActiveMembers && activeConversation.isChannel ? <>
+                    <button type="button" title="Manage channel members" aria-label="Manage channel members" aria-expanded={showManageMembers} onClick={() => setShowManageMembers((open) => !open)} className="rounded-full p-1.5 text-slate-600 hover:bg-slate-100"><Shield className="h-4 w-4" aria-hidden="true" /></button>
+                    <button type="button" title="Add channel members" aria-label="Add channel members" onClick={() => { setShowAddMembers((open) => !open); setSelectedAddParticipants([]); if (!directory.length) void loadDirectory() }} className="rounded-full p-1.5 text-[#078744] hover:bg-[#e8f5e9]"><UserPlus className="h-4 w-4" aria-hidden="true" /></button>
                   </> : null}
                   {(activePeer || activeConversation.isGroup) ? <Link to={activeConversation.isGroup ? `/calls?conversation=${encodeURIComponent(activeConversation.id)}&type=video` : `/calls?user=${encodeURIComponent(activePeer!.id)}&type=video`} title="Start video call" aria-label="Start video call" className="rounded-full p-1.5 text-slate-600 hover:bg-slate-100"><Video className="h-4 w-4" aria-hidden="true" /></Link> : null}
                   {(activePeer || activeConversation.isGroup) ? <Link to={activeConversation.isGroup ? `/calls?conversation=${encodeURIComponent(activeConversation.id)}&type=voice` : `/calls?user=${encodeURIComponent(activePeer!.id)}&type=voice`} title="Start voice call" aria-label="Start voice call" className="rounded-full p-1.5 text-slate-600 hover:bg-slate-100"><Phone className="h-4 w-4" aria-hidden="true" /></Link> : null}
@@ -711,12 +777,12 @@ export function MessagesPage() {
                 </div>
               </header>
 
-              {showManageMembers && activeConversation.isGroup ? <section aria-label="Manage group members" className="mx-2 mt-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                <div className="flex items-center justify-between"><h3 className="text-sm font-semibold text-slate-900">Group admins and members</h3><button type="button" onClick={() => setShowManageMembers(false)} aria-label="Close member management" className="rounded-full p-1 text-slate-500 hover:bg-slate-100"><X className="h-4 w-4" /></button></div>
-                <ul className="mt-2 max-h-40 divide-y divide-slate-100 overflow-y-auto">{activeConversation.participants.map((participant) => <li key={participant.userId} className="flex items-center gap-2 py-2 text-sm"><span className="min-w-0 flex-1 truncate text-slate-800">{participant.user?.name ?? participant.userId}{participant.userId === user?.id ? ' (you)' : ''}</span><span className="text-xs capitalize text-slate-500">{participant.role === 'OWNER' ? 'Owner' : participant.role === 'MODERATOR' ? 'Admin' : 'Member'}</span>{participant.role !== 'OWNER' ? <button type="button" onClick={() => void changeGroupMemberRole(participant)} className="rounded-lg px-2 py-1 text-xs font-semibold text-[#087b43] hover:bg-[#e8f5e9]">{participant.role === 'MODERATOR' ? 'Remove admin' : 'Make admin'}</button> : null}</li>)}</ul>
+              {showManageMembers && activeConversation.isGroup && activeConversation.isChannel && canManageActiveMembers ? <section aria-label="Manage channel members" className="mx-2 mt-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                <div className="flex items-center justify-between"><h3 className="text-sm font-semibold text-slate-900">Channel admins and members</h3><button type="button" onClick={() => setShowManageMembers(false)} aria-label="Close member management" className="rounded-full p-1 text-slate-500 hover:bg-slate-100"><X className="h-4 w-4" /></button></div>
+                <ul className="mt-2 max-h-40 divide-y divide-slate-100 overflow-y-auto">{activeConversation.participants.map((participant) => <li key={participant.userId} className="flex items-center gap-2 py-2 text-sm"><span className="min-w-0 flex-1 truncate text-slate-800">{participant.user?.name ?? participant.userId}{participant.userId === user?.id ? ' (you)' : ''}</span><span className="text-xs capitalize text-slate-500">{participant.role === 'OWNER' ? 'Owner' : participant.role === 'MODERATOR' ? 'Admin' : 'Member'}</span>{canManageActiveMembers && participant.role !== 'OWNER' ? <button type="button" onClick={() => void changeGroupMemberRole(participant)} className="rounded-lg px-2 py-1 text-xs font-semibold text-[#087b43] hover:bg-[#e8f5e9]">{participant.role === 'MODERATOR' ? 'Remove admin' : 'Make admin'}</button> : null}</li>)}</ul>
               </section> : null}
 
-              {showAddMembers && activeConversation.isGroup ? <section aria-label="Add group members" className="mx-2 mt-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+              {showAddMembers && activeConversation.isGroup && activeConversation.isChannel && canManageActiveMembers ? <section aria-label="Add channel members" className="mx-2 mt-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <h3 className="text-sm font-semibold text-slate-900">Add members</h3>
                 {directoryError ? <p role="alert" className="mt-2 text-xs text-rose-700">{directoryError}</p> : null}
                 <div className="mt-2 max-h-36 space-y-1 overflow-y-auto">
@@ -838,16 +904,75 @@ export function MessagesPage() {
           )}
         </section>
       </div>
-      {!keyboardOpen ? <nav aria-label="NOVAKOKO navigation" className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-100 bg-white/95 px-2 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur">
-        <div className="mx-auto grid max-w-xl grid-cols-4">
-          {[
-            { label: 'Chats', to: '/messages', icon: MessageCircleMore, active: true },
-            { label: 'Updates', to: '/updates', icon: CircleDot, active: false },
-            { label: 'Communities', to: '/communities', icon: UsersRound, active: false },
-            { label: 'Calls', to: '/calls', icon: Phone, active: false },
-          ].map(({ label, to, icon: Icon, active }) => <Link key={to} to={to} aria-current={active ? 'page' : undefined} className={`flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-medium ${active ? 'text-[#078744]' : 'text-slate-500 hover:text-slate-900'}`}><span className={`flex h-7 w-14 items-center justify-center rounded-full ${active ? 'bg-[#e8f5e9]' : ''}`}><Icon className="h-5 w-5" aria-hidden="true" /></span>{label}</Link>)}
-        </div>
-      </nav> : null}
+      {showGroupProfile && activeConversation?.isGroup && !activeConversation.isChannel ? <div className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/55 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-labelledby="group-profile-title">
+        <section className="max-h-[92dvh] w-full max-w-xl overflow-y-auto rounded-t-3xl bg-white p-4 text-slate-900 shadow-2xl sm:rounded-3xl sm:p-6">
+          <header className="flex items-start justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <Avatar src={groupImagePreview || resolveMediaUrl(activeConversation.imageUrl)} alt={activeConversation.name ?? 'Group'} size="lg" />
+              <div className="min-w-0"><h2 id="group-profile-title" className="truncate text-xl font-semibold">{activeConversation.name ?? 'Group conversation'}</h2><p className="text-xs text-slate-500">{activeConversation.participants.length} members</p></div>
+            </div>
+            <button type="button" onClick={() => { setShowGroupProfile(false); setShowAddMembers(false) }} aria-label="Close group details" className="rounded-full p-2 text-slate-500 hover:bg-slate-100"><X className="h-5 w-5" aria-hidden="true" /></button>
+          </header>
+
+          <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-slate-600">{activeConversation.description || 'No group description yet.'}</p>
+          {error ? <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
+
+          {canManageActiveGroup ? <form onSubmit={(event) => void saveGroupProfile(event)} className="mt-4 space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <h3 className="text-sm font-semibold">Group settings</h3>
+            <label className="block text-xs font-medium text-slate-600">Group name
+              <input value={groupNameDraft} onChange={(event) => setGroupNameDraft(event.target.value)} maxLength={120} required className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900" />
+            </label>
+            <label className="block text-xs font-medium text-slate-600">Description
+              <textarea value={groupDescriptionDraft} onChange={(event) => setGroupDescriptionDraft(event.target.value)} maxLength={500} rows={3} className="mt-1 w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900" />
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50">
+              <Camera className="h-4 w-4" aria-hidden="true" />
+              {groupImageFile?.name ?? 'Choose group image'}
+              <input type="file" accept="image/jpeg,image/png,image/webp" aria-label="Upload group image" onChange={(event) => {
+                const file = event.target.files?.[0]
+                event.currentTarget.value = ''
+                if (!file) return
+                if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 10 * 1024 * 1024) {
+                  setError('Choose a JPEG, PNG, or WebP group image up to 10 MB.')
+                  return
+                }
+                setError('')
+                setGroupImage(file)
+              }} className="sr-only" />
+            </label>
+            <div className="flex justify-end"><Button type="submit" variant="primary" size="sm" disabled={groupSettingsBusy}>{groupSettingsBusy ? 'Saving…' : 'Save group settings'}</Button></div>
+          </form> : null}
+
+          <div className="mt-5 flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold">Members</h3>
+            {canManageActiveGroup ? <button type="button" onClick={() => {
+              setShowAddMembers((open) => !open)
+              setSelectedAddParticipants([])
+              if (!directory.length) void loadDirectory()
+            }} className="rounded-xl bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100">{showAddMembers ? 'Cancel add' : 'Add member'}</button> : null}
+          </div>
+          {showAddMembers && canManageActiveGroup ? <section aria-label="Add group members" className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+            {directoryError ? <p role="alert" className="text-xs text-rose-700">{directoryError}</p> : null}
+            <div className="max-h-36 space-y-1 overflow-y-auto">
+              {directory.filter((person) => !activeConversation.participants.some((participant) => participant.userId === person.id)).map((person) => <label key={person.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 hover:bg-white">
+                <input type="checkbox" checked={selectedAddParticipants.includes(person.id)} onChange={(event) => setSelectedAddParticipants((current) => event.target.checked ? [...current, person.id] : current.filter((id) => id !== person.id))} />
+                <span className="text-sm text-slate-800">{person.name}</span>
+              </label>)}
+              {directory.filter((person) => !activeConversation.participants.some((participant) => participant.userId === person.id)).length === 0 ? <p className="py-2 text-xs text-slate-500">Everyone is already in this group.</p> : null}
+            </div>
+            <div className="mt-2 flex justify-end"><Button variant="primary" size="sm" disabled={!selectedAddParticipants.length} onClick={() => void addGroupMembers()}>Add selected</Button></div>
+          </section> : null}
+
+          <ul className="mt-2 divide-y divide-slate-100">
+            {activeConversation.participants.map((participant) => <li key={participant.userId} className="flex items-center gap-2 py-2.5">
+              <Avatar src={participant.user?.avatar ?? ''} alt={participant.user?.name ?? 'Member'} size="sm" />
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800">{participant.user?.name ?? participant.userId}{participant.userId === user?.id ? ' (you)' : ''}</span>
+              <span className="text-xs text-slate-500">{participant.role === 'OWNER' ? 'Owner' : participant.role === 'MODERATOR' ? 'Admin' : 'Member'}</span>
+              {canManageActiveGroup && participant.userId !== user?.id && participant.role !== 'OWNER' ? <button type="button" onClick={() => void changeGroupMemberRole(participant)} className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50">{participant.role === 'MODERATOR' ? 'Remove admin' : 'Make admin'}</button> : null}
+            </li>)}
+          </ul>
+        </section>
+      </div> : null}
     </div>
   )
 }

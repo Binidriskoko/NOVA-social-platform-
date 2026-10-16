@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CircleDot, ImagePlus, MessageCircleMore, Phone, Plus, UsersRound, X } from 'lucide-react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { ImagePlus, Plus, X } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
 import { Avatar } from '../components/ui/Avatar'
 import { Button } from '../components/ui/Button'
 import { useAuth } from '../context/AuthContext'
@@ -128,15 +128,6 @@ export function UpdatesPage() {
           </button></li>)}</ul>
         </section>
       </main>
-
-      <nav aria-label="NOVAKOKO navigation" className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-100 bg-white/95 px-2 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur">
-        <div className="mx-auto grid max-w-xl grid-cols-4">{[
-          { label: 'Chats', to: '/messages', icon: MessageCircleMore },
-          { label: 'Updates', to: '/updates', icon: CircleDot },
-          { label: 'Communities', to: '/communities', icon: UsersRound },
-          { label: 'Calls', to: '/calls', icon: Phone },
-        ].map(({ label, to, icon: Icon }) => <Link key={to} to={to} aria-current={to === '/updates' ? 'page' : undefined} className={`flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-medium ${to === '/updates' ? 'text-[#078744]' : 'text-slate-500 hover:text-slate-900'}`}><span className={`flex h-7 w-14 items-center justify-center rounded-full ${to === '/updates' ? 'bg-[#e8f5e9]' : ''}`}><Icon className="h-5 w-5" aria-hidden="true" /></span>{label}</Link>)}</div>
-      </nav>
 
       {activeStory ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" role="dialog" aria-modal="true" aria-label={`${activeStory.author.name}'s status`}>
         <article className="relative flex max-h-[90dvh] w-full max-w-md flex-col overflow-hidden rounded-xl bg-slate-950 text-white">

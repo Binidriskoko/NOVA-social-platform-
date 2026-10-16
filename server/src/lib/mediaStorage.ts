@@ -145,6 +145,11 @@ export function attachmentMediaKeyFromUrl(url: string) {
   return match?.[1] ?? null;
 }
 
+export function videoMediaKeyFromUrl(url: string) {
+  const match = /^\/api\/media\/files\/([0-9a-f-]{36}\.(?:webm|mp4|ogg))$/.exec(url);
+  return match?.[1] ?? null;
+}
+
 export async function uploadedMediaBelongsTo(url: string, userId: string, nodeEnv: string) {
   if (!url.startsWith('/api/media/')) return true;
   const key = mediaKeyFromUrl(url) ?? attachmentMediaKeyFromUrl(url);
@@ -182,4 +187,11 @@ export async function uploadedMediaBelongsTo(url: string, userId: string, nodeEn
   ]);
 
   return Boolean(object?.ownerUserId === userId || profile || posts.length || stories || message);
+}
+
+export async function uploadedVideoBelongsTo(url: string, userId: string, nodeEnv: string) {
+  const key = videoMediaKeyFromUrl(url);
+  if (!key) return false;
+  const object = await getMediaStorage(nodeEnv).get(key);
+  return object?.ownerUserId === userId && object.contentType.startsWith('video/');
 }

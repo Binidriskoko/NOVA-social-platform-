@@ -2,7 +2,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import multer from 'multer';
 import sharp from 'sharp';
 import env from '../config/env.js';
-import { getMediaStorage, MediaStorageUnavailableError } from '../lib/mediaStorage.js';
+import { getMediaStorage, MediaStorageUnavailableError, videoMediaKeyFromUrl } from '../lib/mediaStorage.js';
 import { isDatabaseAvailable, prisma } from '../lib/prisma.js';
 import { socialStore } from '../lib/socialStore.js';
 import { requireActiveAccountIfAuthenticated, requireAuth } from '../middleware/auth.js';
@@ -67,6 +67,30 @@ function uploadAttachmentFile(req: Request, res: Response, next: NextFunction) {
   });
 }
 
+function uploadVideoFile(req: Request, res: Response, next: NextFunction) {
+  multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MAX_MEDIA_BYTES, files: 1 },
+    fileFilter(_request, file, callback) {
+      const extension = file.originalname.split('.').at(-1)?.toLowerCase();
+      if (!['video/mp4', 'video/webm', 'video/ogg'].includes(file.mimetype)
+        || attachmentTypes.get(file.mimetype) !== extension) {
+        callback(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'file'));
+        return;
+      }
+      callback(null, true);
+    },
+  }).single('file')(req, res, (error) => {
+    if (error instanceof multer.MulterError) {
+      const tooLarge = error.code === 'LIMIT_FILE_SIZE';
+      return res.status(tooLarge ? 413 : 400).json({
+        message: tooLarge ? 'Videos must be 10 MB or smaller.' : 'Choose an MP4, WebM, or Ogg video.',
+      });
+    }
+    return next(error);
+  });
+}
+
 function hasValidFileSignature(contentType: string, bytes: Buffer) {
   if (contentType === 'application/pdf') return bytes.subarray(0, 5).toString() === '%PDF-';
   if (contentType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
@@ -85,7 +109,7 @@ async function canReadAttachment(key: string, ownerUserId: string, viewerId: str
   if (ownerUserId === viewerId) return true;
   const mediaUrl = `/api/media/files/${key}`;
   if (!(await isDatabaseAvailable())) {
-    return socialStore.state.messages.some((message) =>
+    const referencedByMessage = socialStore.state.messages.some((message) =>
       message.mediaUrl === mediaUrl
       && !message.deletedAt
       && (!message.expiresAt || new Date(message.expiresAt).getTime() > Date.now())
@@ -95,8 +119,21 @@ async function canReadAttachment(key: string, ownerUserId: string, viewerId: str
         && !participant.leftAt,
       ),
     );
+    if (referencedByMessage) return true;
+    if (!videoMediaKeyFromUrl(mediaUrl)) return false;
+    const isBlocked = socialStore.state.blocks.some((block) =>
+      (block.blockerId === viewerId && block.blockedId === ownerUserId)
+      || (block.blockerId === ownerUserId && block.blockedId === viewerId),
+    );
+    if (isBlocked) return false;
+    const followsOwner = socialStore.state.follows.some((follow) => follow.followerId === viewerId && follow.followingId === ownerUserId);
+    return socialStore.state.posts.some((post) =>
+      post.authorId === ownerUserId
+      && post.imageUrl === mediaUrl
+      && (post.visibility === 'PUBLIC' || (post.visibility === 'FOLLOWERS' && followsOwner)),
+    );
   }
-  return Boolean(await prisma.message.findFirst({
+  const message = await prisma.message.findFirst({
     where: {
       mediaUrl,
       deletedAt: null,
@@ -104,7 +141,24 @@ async function canReadAttachment(key: string, ownerUserId: string, viewerId: str
       conversation: { participants: { some: { userId: viewerId, leftAt: null } } },
     },
     select: { id: true },
-  }));
+  });
+  if (message) return true;
+  if (!videoMediaKeyFromUrl(mediaUrl)) return false;
+  const [blocked, follow, post] = await Promise.all([
+    prisma.block.findFirst({
+      where: { OR: [{ blockerId: viewerId, blockedId: ownerUserId }, { blockerId: ownerUserId, blockedId: viewerId }] },
+      select: { id: true },
+    }),
+    prisma.follow.findUnique({
+      where: { followerId_followingId: { followerId: viewerId, followingId: ownerUserId } },
+      select: { id: true },
+    }),
+    prisma.post.findFirst({
+      where: { authorId: ownerUserId, imageUrl: mediaUrl, visibility: { in: ['PUBLIC', 'FOLLOWERS'] } },
+      select: { visibility: true },
+    }),
+  ]);
+  return Boolean(!blocked && post && (post.visibility === 'PUBLIC' || follow));
 }
 
 async function canReadUploadedMedia(key: string, ownerUserId: string, viewerId: string) {
@@ -141,7 +195,16 @@ async function canReadUploadedMedia(key: string, ownerUserId: string, viewerId: 
         && !participant.leftAt,
       ),
     );
-    return Boolean(referencedByProfile || referencedByPost || referencedByStory || referencedByMessage);
+    const referencedByConversation = socialStore.state.conversations.some((conversation) =>
+      conversation.isGroup
+      && conversation.imageUrl === mediaUrl
+      && socialStore.state.conversationParticipants.some((participant) =>
+        participant.conversationId === conversation.id
+        && participant.userId === viewerId
+        && !participant.leftAt,
+      ),
+    );
+    return Boolean(referencedByProfile || referencedByPost || referencedByStory || referencedByMessage || referencedByConversation);
   }
 
   const blocked = await prisma.block.findFirst({
@@ -161,7 +224,7 @@ async function canReadUploadedMedia(key: string, ownerUserId: string, viewerId: 
   });
   if (profile) return true;
 
-  const [follow, posts, stories, message] = await Promise.all([
+  const [follow, posts, stories, message, conversation] = await Promise.all([
     prisma.follow.findUnique({
       where: { followerId_followingId: { followerId: viewerId, followingId: ownerUserId } },
       select: { id: true },
@@ -183,9 +246,13 @@ async function canReadUploadedMedia(key: string, ownerUserId: string, viewerId: 
       },
       select: { id: true },
     }),
+    prisma.conversation.findFirst({
+      where: { isGroup: true, imageUrl: mediaUrl, participants: { some: { userId: viewerId, leftAt: null } } },
+      select: { id: true },
+    }),
   ]);
 
-  return posts.some((post) => post.visibility === 'PUBLIC' || (post.visibility === 'FOLLOWERS' && Boolean(follow))) || Boolean((stories && follow) || message);
+  return posts.some((post) => post.visibility === 'PUBLIC' || (post.visibility === 'FOLLOWERS' && Boolean(follow))) || Boolean((stories && follow) || message || conversation);
 }
 
 mediaRouter.post('/uploads', requireAuth, uploadMediaFile, async (req, res, next) => {
@@ -203,6 +270,24 @@ mediaRouter.post('/uploads', requireAuth, uploadMediaFile, async (req, res, next
     if (error instanceof Error && /Input buffer|unsupported image|corrupt|pixel limit/i.test(error.message)) {
       return res.status(400).json({ message: 'The uploaded file is not a valid supported image.' });
     }
+    return next(error);
+  }
+});
+
+mediaRouter.post('/videos', requireAuth, uploadVideoFile, async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'Choose a video to upload.' });
+    if (!hasValidFileSignature(req.file.mimetype, req.file.buffer)) {
+      return res.status(400).json({ message: 'The uploaded file does not match its declared video type.' });
+    }
+    const extension = attachmentTypes.get(req.file.mimetype);
+    if (!extension) {
+      return res.status(400).json({ message: 'Choose an MP4, WebM, or Ogg video.' });
+    }
+    const stored = await getMediaStorage(env.NODE_ENV).putAttachment(req.file.buffer, req.file.mimetype, extension, req.user!.id);
+    return res.status(201).json({ mediaUrl: stored.publicUrl, contentType: req.file.mimetype });
+  } catch (error) {
+    if (error instanceof MediaStorageUnavailableError) return res.status(503).json({ message: 'Persistent video storage is not configured.' });
     return next(error);
   }
 });

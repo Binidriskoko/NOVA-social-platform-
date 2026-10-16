@@ -3,12 +3,10 @@ import type { ReactNode } from 'react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Bell,
-  CircleDot,
   Compass,
   House,
   LogOut,
   MessageCircleMore,
-  PlusSquare,
   Settings,
   UserRound,
   BriefcaseBusiness,
@@ -16,6 +14,7 @@ import {
   Phone,
   Sparkles,
   UsersRound,
+  Video,
 } from 'lucide-react'
 import { Avatar } from './ui/Avatar'
 import { cn } from '../utils/cn'
@@ -30,10 +29,10 @@ export const sidebarItems = [
   { label: 'Home', path: '/', icon: House },
   { label: 'Explore', path: '/explore', icon: Compass },
   { label: 'Messages', path: '/messages', icon: MessageCircleMore },
+  { label: 'Videos', path: '/videos', icon: Video },
   { label: 'Calls', path: '/calls', icon: Phone },
   { label: 'Groups', path: '/communities', icon: UsersRound },
   { label: 'Live', path: '/live', icon: Radio },
-  { label: 'Create', path: '/create', icon: PlusSquare },
   { label: 'Notifications', path: '/notifications', icon: Bell },
   { label: 'Profile', path: '/profile', icon: UserRound },
   { label: 'Settings', path: '/settings', icon: Settings },
@@ -45,7 +44,7 @@ export function AppShell({ children }: AppShellProps) {
   const navigate = useNavigate()
   const { user, logout, isLoading } = useAuth()
   const isMessagingSurface = location.pathname === '/messages' || location.pathname === '/updates'
-  const isCommunicationSurface = isMessagingSurface || location.pathname === '/communities' || location.pathname === '/calls'
+  const isVideoSurface = location.pathname === '/videos'
   const canAccessAdmin = ['ADMIN', 'SUPER_ADMIN', 'MODERATOR'].includes(user?.role ?? 'USER')
   const navItems = canAccessAdmin
     ? [...sidebarItems, { label: 'Admin', path: '/admin', icon: BriefcaseBusiness }]
@@ -66,8 +65,8 @@ export function AppShell({ children }: AppShellProps) {
 
   return (
     <div className="min-h-screen text-slate-900">
-      <div className={cn('mx-auto flex min-h-screen max-w-[1600px] gap-4 p-3 pb-32 sm:p-4 lg:gap-6 lg:pb-4', isMessagingSurface && 'h-[100dvh] min-h-0 max-w-none gap-0 p-0 pb-0 lg:p-0')}>
-        <aside className={cn('hidden w-[250px] shrink-0 rounded-[28px] border border-blue-950 bg-gradient-to-b from-[#101d46] via-[#15285d] to-[#1b2862] p-4 text-white shadow-[0_24px_70px_-32px_rgba(18,35,87,.65)] lg:flex lg:flex-col', isMessagingSurface && 'hidden')}>
+      <div className={cn('mx-auto flex min-h-screen max-w-[1600px] gap-4 p-3 pb-32 sm:p-4 lg:gap-6 lg:pb-4', isMessagingSurface && 'h-[100dvh] min-h-0 max-w-none gap-0 p-0 pb-0 lg:gap-4 lg:p-4', isVideoSurface && 'h-[100dvh] min-h-0 gap-0 p-0 pb-0 lg:gap-4 lg:p-4')}>
+        <aside className="hidden w-[250px] shrink-0 rounded-[28px] border border-blue-950 bg-gradient-to-b from-[#101d46] via-[#15285d] to-[#1b2862] p-4 text-white shadow-[0_24px_70px_-32px_rgba(18,35,87,.65)] lg:flex lg:flex-col">
           <div className="mb-8 flex items-center gap-3 px-2">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-400 via-blue-500 to-violet-500 text-lg font-black text-white shadow-lg shadow-blue-950/40">
               N
@@ -119,36 +118,18 @@ export function AppShell({ children }: AppShellProps) {
           </div>
         </aside>
 
-        <main className={cn('flex min-w-0 flex-1 flex-col', isMessagingSurface && 'h-full min-h-0')}>
-          <div className={cn('min-h-[calc(100vh-2rem)] overflow-hidden rounded-[28px] border border-white/80 bg-white/95 shadow-[0_20px_70px_-42px_rgba(18,35,87,.38)] backdrop-blur', isMessagingSurface && 'h-full min-h-0 rounded-none border-0 shadow-none')}>
-            {!isMessagingSurface ? <TopBar currentPath={location.pathname} /> : null}
-            <div className={isMessagingSurface ? 'h-full min-h-0' : ''}>{children}</div>
+        <main className={cn('flex min-w-0 flex-1 flex-col', (isMessagingSurface || isVideoSurface) && 'h-full min-h-0')}>
+          <div className={cn('min-h-[calc(100vh-2rem)] overflow-hidden rounded-[28px] border border-white/80 bg-white/95 shadow-[0_20px_70px_-42px_rgba(18,35,87,.38)] backdrop-blur', (isMessagingSurface || isVideoSurface) && 'h-full min-h-0 rounded-none border-0 shadow-none')}>
+            {!isMessagingSurface && !isVideoSurface ? <TopBar currentPath={location.pathname} /> : null}
+            <div className={(isMessagingSurface || isVideoSurface) ? 'h-full min-h-0' : ''}>{children}</div>
           </div>
         </main>
 
       </div>
 
-      {!isCommunicationSurface ? <MobileNavigation /> : null}
-      {!isMessagingSurface && isCommunicationSurface ? <CommunicationNavigation /> : null}
+      <MobileNavigation />
     </div>
   )
-}
-
-function CommunicationNavigation() {
-  const location = useLocation()
-  const items = [
-    { label: 'Chats', path: '/messages', icon: MessageCircleMore },
-    { label: 'Updates', path: '/updates', icon: CircleDot },
-    { label: 'Communities', path: '/communities', icon: UsersRound },
-    { label: 'Calls', path: '/calls', icon: Phone },
-  ]
-
-  return <nav aria-label="NOVAKOKO navigation" className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-100 bg-white/95 px-2 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur lg:hidden">
-    <div className="mx-auto grid max-w-xl grid-cols-4">{items.map(({ label, path, icon: Icon }) => {
-      const active = location.pathname === path
-      return <Link key={path} to={path} aria-current={active ? 'page' : undefined} className={`flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-medium ${active ? 'text-[#078744]' : 'text-slate-500 hover:text-slate-900'}`}><span className={`flex h-7 w-14 items-center justify-center rounded-full ${active ? 'bg-[#e8f5e9]' : ''}`}><Icon className="h-5 w-5" aria-hidden="true" /></span>{label}</Link>
-    })}</div>
-  </nav>
 }
 
 type TopBarProps = {
@@ -159,7 +140,7 @@ function TopBar({ currentPath }: TopBarProps) {
   const labels: Record<string, string> = {
     '/': 'Home',
     '/explore': 'Explore',
-    '/create': 'Create',
+    '/videos': 'Videos',
     '/notifications': 'Notifications',
     '/messages': 'Messages',
     '/live': 'Live rooms',
@@ -181,7 +162,7 @@ function TopBar({ currentPath }: TopBarProps) {
       </div>
       <div className="flex items-center gap-2">
         <Link to="/explore" className="hidden rounded-xl border border-blue-100 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-blue-50 sm:inline-flex">Find people</Link>
-        <Link to="/create" className="inline-flex items-center rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:from-blue-700 hover:to-indigo-700">+ Create</Link>
+        <Link to="/?create=1" className="inline-flex items-center rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:from-blue-700 hover:to-indigo-700">+ Create</Link>
       </div>
     </header>
   )
@@ -192,7 +173,7 @@ function MobileNavigation() {
   const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
 
-  const mobilePaths = ['/', '/explore', '/create', '/messages', '/profile']
+  const mobilePaths = ['/', '/explore', '/messages', '/videos', '/profile']
   const mobileItems = sidebarItems.filter(({ path }) => mobilePaths.includes(path))
   const canAccessAdmin = ['ADMIN', 'SUPER_ADMIN', 'MODERATOR'].includes(user?.role ?? 'USER')
   const moreItems = sidebarItems.filter(({ path }) => !mobilePaths.includes(path))

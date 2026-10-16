@@ -3,8 +3,10 @@ import { Link } from 'react-router-dom'
 import { Bookmark, MessageCircle, PencilLine, Share2, ShieldAlert, ThumbsUp, Trash2 } from 'lucide-react'
 import { Avatar } from './ui/Avatar'
 import { Button } from './ui/Button'
+import { PostMedia } from './PostMedia'
 import { useAuth } from '../context/AuthContext'
-import { apiRequest, resolveMediaUrl } from '../lib/api'
+import { apiRequest } from '../lib/api'
+import { copyTextToClipboard, sharePostLink } from '../lib/postSharing'
 import type { Post } from '../types'
 
 type CommentRecord = {
@@ -168,20 +170,7 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
 
   const copyPostLink = async () => {
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(postUrl)
-      } else {
-        const input = document.createElement('textarea')
-        input.value = postUrl
-        input.setAttribute('readonly', '')
-        input.style.position = 'fixed'
-        input.style.opacity = '0'
-        document.body.append(input)
-        input.select()
-        const copied = document.execCommand('copy')
-        input.remove()
-        if (!copied) throw new Error('Clipboard access is unavailable in this browser.')
-      }
+      await copyTextToClipboard(postUrl)
       await recordPostShare()
       setNotice('Post link copied.')
       setShareOpen(false)
@@ -194,19 +183,10 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
     setShareBusy(true)
     setError('')
     try {
-      if (!navigator.share) {
-        await copyPostLink()
-        return
-      }
-      try {
-        await navigator.share({ title: `Post by ${post.author.name}`, text: post.content, url: postUrl })
-      } catch (shareError) {
-        if (shareError instanceof Error && shareError.name === 'AbortError') return
-        await copyPostLink()
-        return
-      }
+      const result = await sharePostLink({ title: `Post by ${post.author.name}`, text: post.content, url: postUrl })
+      if (result === 'cancelled') return
       await recordPostShare()
-      setNotice('Post shared.')
+      setNotice(result === 'copied' ? 'Post link copied.' : 'Post shared.')
       setShareOpen(false)
     } catch (shareError) {
       setError(shareError instanceof Error ? shareError.message : 'Unable to share this post.')
@@ -361,7 +341,7 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
       ) : (
         <>
           {content ? <p className="mt-4 whitespace-pre-wrap text-[15px] leading-7 text-slate-700">{content}</p> : null}
-          {imageUrl ? <img src={resolveMediaUrl(imageUrl)} crossOrigin={imageUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} alt="Post attachment" className="mt-4 max-h-[32rem] w-full rounded-[24px] object-cover" /> : null}
+          {imageUrl ? <PostMedia url={imageUrl} alt="Post attachment" className="mt-4 max-h-[32rem] w-full rounded-[24px] object-cover" /> : null}
           <p className="mt-2 text-xs text-slate-500">{visibility === 'PUBLIC' ? 'Everyone' : visibility === 'FOLLOWERS' ? 'Followers' : 'Only me'}</p>
         </>
       )}
@@ -376,7 +356,9 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
         <Button variant="ghost" size="sm" className={`px-2 ${saved ? 'text-indigo-700' : 'text-slate-600'}`} onClick={() => void toggleSave()} disabled={busy} icon={<Bookmark className="h-4 w-4" aria-hidden="true" />}>
           {saveCount}
         </Button>
-        <span className="px-2 text-xs text-slate-500" aria-label={`${shareCount} shares`}>{shareCount} shares</span>
+        <Button variant="ghost" size="sm" className="px-2 text-slate-600" onClick={() => void openShareOptions()} icon={<Share2 className="h-4 w-4" aria-hidden="true" />}>
+          Share · {shareCount}
+        </Button>
         {isOwnPost ? <Button variant="ghost" size="sm" className="px-2 text-slate-600" onClick={() => setEditing((value) => !value)} icon={<PencilLine className="h-4 w-4" aria-hidden="true" />}>Edit</Button> : null}
       </div>
 

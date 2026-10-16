@@ -147,6 +147,89 @@ describe('authenticated media uploads', () => {
     expect((await request(app).get(voice!.mediaUrl!).set('Cookie', bob.auth)).status).toBe(404);
   });
 
+  it('uploads videos for posts, validates their type and signature, and serves them by post visibility', async () => {
+    const owner = await register('VideoPostOwner');
+    const follower = await register('VideoPostFollower');
+    const outsider = await register('VideoPostOutsider');
+    const videoBytes = Buffer.from('0000ftypisom');
+    const videoUpload = await request(app)
+      .post('/api/media/videos')
+      .set('Cookie', owner.auth)
+      .attach('file', videoBytes, { filename: 'clip.mp4', contentType: 'video/mp4' });
+
+    expect(videoUpload.status).toBe(201);
+    expect(videoUpload.body).toMatchObject({ contentType: 'video/mp4' });
+    expect((await request(app).get(videoUpload.body.mediaUrl).set('Cookie', owner.auth)).headers['content-type']).toContain('video/mp4');
+    expect((await request(app).post('/api/posts').set('Cookie', outsider.auth).send({
+      content: 'Attempt to use another member video',
+      imageUrl: videoUpload.body.mediaUrl,
+    })).status).toBe(403);
+
+    const post = await request(app).post('/api/posts').set('Cookie', owner.auth).send({
+      content: 'A community video',
+      imageUrl: videoUpload.body.mediaUrl,
+    });
+    expect(post.status).toBe(201);
+    expect((await request(app).get(videoUpload.body.mediaUrl).set('Cookie', outsider.auth)).status).toBe(200);
+
+    await request(app).post(`/api/users/${owner.user.id}/follow`).set('Cookie', follower.auth);
+    const followerOnlyUpload = await request(app)
+      .post('/api/media/videos')
+      .set('Cookie', owner.auth)
+      .attach('file', Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 1]), { filename: 'followers.webm', contentType: 'video/webm' });
+    expect(followerOnlyUpload.status).toBe(201);
+    const followerPost = await request(app).post('/api/posts').set('Cookie', owner.auth).send({
+      content: 'A followers-only clip',
+      imageUrl: followerOnlyUpload.body.mediaUrl,
+      visibility: 'FOLLOWERS',
+    });
+    expect(followerPost.status).toBe(201);
+    expect((await request(app).get(followerOnlyUpload.body.mediaUrl).set('Cookie', follower.auth)).status).toBe(200);
+    expect((await request(app).get(followerOnlyUpload.body.mediaUrl).set('Cookie', outsider.auth)).status).toBe(404);
+
+    const invalidSignature = await request(app)
+      .post('/api/media/videos')
+      .set('Cookie', owner.auth)
+      .attach('file', Buffer.from('not a video'), { filename: 'broken.mp4', contentType: 'video/mp4' });
+    expect(invalidSignature.status).toBe(400);
+    const wrongType = await request(app)
+      .post('/api/media/videos')
+      .set('Cookie', owner.auth)
+      .attach('file', videoBytes, { filename: 'clip.mov', contentType: 'video/quicktime' });
+    expect(wrongType.status).toBe(400);
+    expect((await request(app).post('/api/media/videos').attach('file', videoBytes, { filename: 'clip.mp4', contentType: 'video/mp4' })).status).toBe(401);
+  });
+
+  it('lets group members view the saved group image and restricts group settings to admins', async () => {
+    const owner = await register('GroupImageOwner');
+    const member = await register('GroupImageMember');
+    const outsider = await register('GroupImageOutsider');
+    const created = await request(app).post('/api/conversations').set('Cookie', owner.auth).send({
+      participantIds: [member.user.id],
+      name: 'Photo group',
+    });
+    const image = await sharp({
+      create: { width: 4, height: 4, channels: 3, background: '#3756a8' },
+    }).png().toBuffer();
+    const upload = await request(app)
+      .post('/api/media/uploads')
+      .set('Cookie', owner.auth)
+      .attach('file', image, { filename: 'group.png', contentType: 'image/png' });
+    expect(upload.status).toBe(201);
+
+    const imageSave = await request(app)
+      .patch(`/api/conversations/${created.body.conversation.id}/group`)
+      .set('Cookie', owner.auth)
+      .send({ imageUrl: upload.body.mediaUrl });
+    expect(imageSave.status).toBe(200);
+    expect((await request(app).get(upload.body.mediaUrl).set('Cookie', member.auth)).status).toBe(200);
+    expect((await request(app).get(upload.body.mediaUrl).set('Cookie', outsider.auth)).status).toBe(404);
+    expect((await request(app)
+      .patch(`/api/conversations/${created.body.conversation.id}/group`)
+      .set('Cookie', outsider.auth)
+      .send({ name: 'Unauthorized' })).status).toBe(404);
+  });
+
   it('rejects attachment uploads without authentication and enforces the media size cap', async () => {
     const alice = await register('AttachmentLimitAlice');
     const bytes = Buffer.alloc(10 * 1024 * 1024 + 1);

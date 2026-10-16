@@ -332,6 +332,8 @@ model PostShare {
 model Conversation {
   id                       String    @id @default(cuid())
   name                     String?
+  description              String?
+  imageUrl                 String?
   isChannel                Boolean   @default(false)
   isGroup                  Boolean   @default(false)
   disappearingAfterSeconds Int       @default(0)

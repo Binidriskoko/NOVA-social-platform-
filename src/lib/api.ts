@@ -12,13 +12,62 @@ export function resolveMediaUrl(url: string | null | undefined) {
   return url.startsWith('/api/media/') ? `${API_BASE_URL}${url}` : url;
 }
 
-export async function uploadMedia(file: File) {
+async function uploadFile(path: string, file: File, onProgress?: (progress: number) => void) {
   const body = new FormData();
   body.append('file', file);
-  return apiRequest<{ mediaUrl: string; contentType: string }>('/api/media/uploads', {
-    method: 'POST',
-    body,
-  });
+  const headers = new Headers()
+  const accessToken = getStoredAccessToken()
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+
+  return new Promise<{ mediaUrl: string; contentType: string }>((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open('POST', `${API_BASE_URL}${path}`)
+    request.withCredentials = true
+    request.timeout = 30000
+    headers.forEach((value, key) => request.setRequestHeader(key, value))
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) onProgress?.(Math.min(99, Math.floor(event.loaded / event.total * 100)))
+    }
+    request.onerror = () => reject(new ApiError(null, 'Unable to reach the NOVAKOKO API. Check your connection and try again shortly.', undefined, 'NETWORK_ERROR'))
+    request.ontimeout = () => reject(new ApiError(null, 'The NOVAKOKO upload timed out. Please try again shortly.', undefined, 'TIMEOUT'))
+    request.onabort = () => reject(new DOMException('The upload was cancelled.', 'AbortError'))
+    request.onload = () => {
+      const contentType = request.getResponseHeader('content-type')?.split(';', 1)[0].trim().toLowerCase() ?? ''
+      let payload: unknown
+      try {
+        payload = JSON.parse(request.responseText)
+      } catch {
+        if (request.status >= 200 && request.status < 300) {
+          reject(new ApiError(request.status, 'The NOVAKOKO API returned an invalid upload response.'))
+        } else {
+          reject(new ApiError(request.status, `The NOVAKOKO API returned HTTP ${request.status} while uploading.`))
+        }
+        return
+      }
+      if (request.status < 200 || request.status >= 300) {
+        if (request.status === 401) clearStoredAccessToken()
+        reject(new ApiError(request.status, extractErrorMessage(payload, `Unable to upload media (HTTP ${request.status}).`), payload))
+        return
+      }
+      if (contentType !== 'application/json' || typeof payload !== 'object' || payload === null
+        || typeof (payload as { mediaUrl?: unknown }).mediaUrl !== 'string'
+        || typeof (payload as { contentType?: unknown }).contentType !== 'string') {
+        reject(new ApiError(request.status, 'The NOVAKOKO API returned an invalid upload response.'))
+        return
+      }
+      onProgress?.(100)
+      resolve(payload as { mediaUrl: string; contentType: string })
+    }
+    request.send(body)
+  })
+}
+
+export function uploadMedia(file: File, onProgress?: (progress: number) => void) {
+  return uploadFile('/api/media/uploads', file, onProgress)
+}
+
+export function uploadVideo(file: File, onProgress?: (progress: number) => void) {
+  return uploadFile('/api/media/videos', file, onProgress)
 }
 
 export async function uploadMessageAttachment(file: File) {

@@ -13,6 +13,7 @@ const createConversationSchema = z.object({
   participantId: z.string().min(1).optional(),
   participantIds: z.array(z.string().min(1)).min(1).max(49).optional(),
   name: z.string().trim().max(120).optional(),
+  description: z.string().trim().max(500).optional(),
   isChannel: z.boolean().optional(),
   isGroup: z.boolean().optional(),
 }).refine((payload) => Boolean(payload.participantId) !== Boolean(payload.participantIds), {
@@ -73,6 +74,18 @@ const addParticipantSchema = z.object({
   message: 'Group participants must be unique.',
 });
 const roleSchema = z.object({ role: z.enum(['MEMBER', 'MODERATOR']) });
+const groupDetailsSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  description: z.string().trim().max(500).optional(),
+  imageUrl: z.string().trim().max(500).refine((value) => {
+    if (!value || mediaKeyFromUrl(value)) return true;
+    try {
+      return new URL(value).protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }, 'Use an HTTPS URL or an uploaded NOVAKOKO image.').optional(),
+}).refine((payload) => Object.keys(payload).length > 0, { message: 'Provide group details to update.' });
 const reportSchema = z.object({
   category: z.enum(['SPAM', 'HARASSMENT', 'SEXUAL_CONTENT', 'HATE', 'VIOLENCE', 'SCAM', 'OTHER']),
   reason: z.string().trim().min(4).max(500),
@@ -187,6 +200,8 @@ messagesRouter.post('/conversations', requireAuth, async (req, res) => {
     const conversation = await prisma.conversation.create({
       data: {
         name: payload.name ?? null,
+        description: payload.description ?? null,
+        imageUrl: null,
         ownerId: userId,
         isChannel: payload.isChannel ?? false,
         isGroup: payload.isGroup ?? (Boolean(payload.participantIds) || Boolean(payload.isChannel)),
@@ -203,6 +218,8 @@ messagesRouter.post('/conversations', requireAuth, async (req, res) => {
     return res.status(201).json({ conversation: {
       id: conversation.id,
       name: conversation.name,
+      description: conversation.description,
+      imageUrl: conversation.imageUrl,
       isGroup: conversation.isGroup,
       isChannel: conversation.isChannel,
       updatedAt: conversation.updatedAt,
@@ -235,6 +252,8 @@ messagesRouter.post('/conversations', requireAuth, async (req, res) => {
   const conversation = {
     id: `conversation_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     name: payload.name ?? null,
+    description: payload.description ?? null,
+    imageUrl: null,
     isChannel: payload.isChannel ?? false,
     isGroup: payload.isGroup ?? (Boolean(payload.participantIds) || Boolean(payload.isChannel)),
     createdAt: new Date().toISOString(),
@@ -280,6 +299,8 @@ messagesRouter.get('/conversations', requireAuth, async (_req, res) => {
       return {
         id: conversation.id,
         name: conversation.name,
+        description: conversation.description,
+        imageUrl: conversation.imageUrl,
         isGroup: conversation.isGroup,
         isChannel: conversation.isChannel,
         updatedAt: conversation.updatedAt,
@@ -306,6 +327,8 @@ messagesRouter.get('/conversations', requireAuth, async (_req, res) => {
     const currentParticipant = participants.find((participant) => participant.userId === userId);
     return {
       ...conversation,
+      description: conversation.description ?? null,
+      imageUrl: conversation.imageUrl ?? null,
       pinnedAt: currentParticipant?.pinnedAt ?? null,
       archivedAt: currentParticipant?.archivedAt ?? null,
       starredAt: currentParticipant?.starredAt ?? null,
@@ -960,7 +983,8 @@ const { participantIds } = validation.data;
     const conversation = await prisma.conversation.findUnique({ where: { id: conversationId }, select: { id: true, isGroup: true, isChannel: true } });
     if (!actor || !conversation) return res.status(404).json({ message: 'Conversation not found.' });
     if (!conversation.isGroup && !conversation.isChannel) return res.status(400).json({ message: 'Members can only be added to group conversations.' });
-    if (actor.role !== 'OWNER' && actor.role !== 'MODERATOR') return res.status(403).json({ message: 'Only group admins can add participants.' });
+    const canAddParticipants = conversation.isChannel ? actor.role === 'OWNER' : actor.role === 'OWNER' || actor.role === 'MODERATOR';
+    if (!canAddParticipants) return res.status(403).json({ message: conversation.isChannel ? 'Only channel owners can add participants.' : 'Only group admins can add participants.' });
     const found = await prisma.user.findMany({ where: { id: { in: participantIds } }, select: { id: true } });
     if (found.length !== participantIds.length) return res.status(404).json({ message: 'User not found.' });
     const currentParticipants = await prisma.conversationParticipant.findMany({ where: { conversationId, userId: { in: participantIds } }, select: { userId: true } });
@@ -973,12 +997,48 @@ const { participantIds } = validation.data;
   const conversation = socialStore.state.conversations.find((entry) => entry.id === conversationId);
   if (!actor || !conversation) return res.status(404).json({ message: 'Conversation not found.' });
   if (!conversation.isGroup && !conversation.isChannel) return res.status(400).json({ message: 'Members can only be added to group conversations.' });
-  if (actor.role !== 'OWNER' && actor.role !== 'MODERATOR') return res.status(403).json({ message: 'Only group admins can add participants.' });
+  const canAddParticipants = conversation.isChannel ? actor.role === 'OWNER' : actor.role === 'OWNER' || actor.role === 'MODERATOR';
+  if (!canAddParticipants) return res.status(403).json({ message: conversation.isChannel ? 'Only channel owners can add participants.' : 'Only group admins can add participants.' });
   for (const targetId of participantIds) if (!findUserById(targetId)) return res.status(404).json({ message: 'User not found.' });
   const newParticipantIds = participantIds.filter((targetId) => !socialStore.state.conversationParticipants.some((entry) => entry.conversationId === conversationId && entry.userId === targetId));
   for (const targetId of newParticipantIds) if (await isBlocked(userId, targetId)) return res.status(403).json({ message: 'You cannot add a blocked user.' });
   for (const targetId of newParticipantIds) socialStore.state.conversationParticipants.push({ id: `participant_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, conversationId, userId: targetId, role: 'MEMBER', joinedAt: new Date().toISOString(), lastReadAt: null, leftAt: null });
   return res.status(201).json({ added: newParticipantIds });
+});
+
+messagesRouter.patch('/conversations/:id/group', requireAuth, async (req, res) => {
+  const conversationId = String(req.params.id);
+  const validation = groupDetailsSchema.safeParse(req.body ?? {});
+  if (!validation.success) return res.status(400).json({ message: validation.error.issues[0]?.message ?? 'Invalid group details.' });
+
+  const userId = req.user!.id;
+  const dbAvailable = await isDatabaseAvailable();
+  const conversation = dbAvailable
+    ? await prisma.conversation.findUnique({ where: { id: conversationId }, select: { id: true, isGroup: true, isChannel: true } })
+    : socialStore.state.conversations.find((entry) => entry.id === conversationId);
+  const actor = dbAvailable
+    ? await prisma.conversationParticipant.findUnique({ where: { conversationId_userId: { conversationId, userId } }, select: { role: true } })
+    : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === userId);
+
+  if (!conversation || !actor) return res.status(404).json({ message: 'Group conversation not found.' });
+  if (!conversation.isGroup || conversation.isChannel) return res.status(400).json({ message: 'Only group conversations have group profile settings.' });
+  if (actor.role !== 'OWNER' && actor.role !== 'MODERATOR') return res.status(403).json({ message: 'Only group admins can update group settings.' });
+
+  const { name, description, imageUrl } = validation.data;
+  if (imageUrl && !(await uploadedMediaBelongsTo(imageUrl, userId, process.env.NODE_ENV ?? 'development'))) {
+    return res.status(403).json({ message: 'You can only use images that you uploaded.' });
+  }
+  const updates = {
+    ...(name === undefined ? {} : { name }),
+    ...(description === undefined ? {} : { description }),
+    ...(imageUrl === undefined ? {} : { imageUrl: imageUrl || null }),
+  };
+  if (dbAvailable) {
+    const updated = await prisma.conversation.update({ where: { id: conversationId }, data: updates });
+    return res.json({ group: { id: updated.id, name: updated.name, description: updated.description, imageUrl: updated.imageUrl } });
+  }
+  const updated = Object.assign(conversation, updates, { updatedAt: new Date().toISOString() });
+  return res.json({ group: { id: updated.id, name: updated.name, description: updated.description ?? null, imageUrl: updated.imageUrl ?? null } });
 });
 
 messagesRouter.patch('/conversations/:id/participants/:userId', requireAuth, async (req, res) => {

@@ -152,6 +152,26 @@ describe('authenticated media uploads', () => {
     const follower = await register('VideoPostFollower');
     const outsider = await register('VideoPostOutsider');
     const videoBytes = Buffer.from('0000ftypisom');
+    const largeVideoBytes = Buffer.alloc(11 * 1024 * 1024);
+    Buffer.from('0000ftypisom').copy(largeVideoBytes);
+    const acceptedLargeVideo = await request(app)
+      .post('/api/media/videos')
+      .set('Cookie', owner.auth)
+      .attach('file', largeVideoBytes, { filename: 'large-clip.mp4', contentType: 'video/mp4' });
+    expect(acceptedLargeVideo.status).toBe(201);
+    expect((await request(app)
+      .post('/api/media/attachments')
+      .set('Cookie', owner.auth)
+      .attach('file', largeVideoBytes, { filename: 'large-attachment.mp4', contentType: 'video/mp4' })).status).toBe(413);
+
+    const oversizedVideo = Buffer.alloc(100 * 1024 * 1024 + 1);
+    Buffer.from('0000ftypisom').copy(oversizedVideo);
+    const rejectedLargeVideo = await request(app)
+      .post('/api/media/videos')
+      .set('Cookie', owner.auth)
+      .attach('file', oversizedVideo, { filename: 'too-large.mp4', contentType: 'video/mp4' });
+    expect(rejectedLargeVideo.status).toBe(413);
+    expect(rejectedLargeVideo.body.message).toMatch(/100 MB or smaller/);
     const videoUpload = await request(app)
       .post('/api/media/videos')
       .set('Cookie', owner.auth)

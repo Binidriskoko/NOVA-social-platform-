@@ -21,6 +21,7 @@ export const envSchema = z.object({
   HOST: z.string().min(1).default('0.0.0.0'),
   DATABASE_URL: z.string().min(1).default('postgresql://postgres:postgres@localhost:5432/nova?schema=public'),
   JWT_SECRET: z.string().min(32).default(DEVELOPMENT_JWT_SECRET),
+  REGISTRATION_DATA_ENCRYPTION_KEY: z.string().min(32).optional(),
   JWT_EXPIRES_IN: z.string().default('7d'),
   COOKIE_NAME: z.string().default('nova_session'),
   COOKIE_SAME_SITE: z.enum(['lax', 'strict', 'none']).default(

@@ -100,6 +100,10 @@ describe('product area gaps', () => {
     expect((await request(app).patch(`/api/conversations/${groupId}/participants/${moderator.user.id}`).set('Cookie', member.auth).send({ role: 'MODERATOR' })).status).toBe(403);
     expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', owner.auth).send({ participantIds: [guest.user.id, guest.user.id] })).status).toBe(400);
     expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', owner.auth).send({ participantIds: [guest.user.id] })).body.added).toEqual([guest.user.id]);
+    const duplicateAdd = await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', owner.auth).send({ participantIds: [guest.user.id] });
+    expect(duplicateAdd.status).toBe(201);
+    expect(duplicateAdd.body.added).toEqual([]);
+    expect((await request(app).get(`/api/conversations/${groupId}`).set('Cookie', owner.auth)).body.conversation.participants.filter((participant: { userId: string }) => participant.userId === guest.user.id)).toHaveLength(1);
     expect((await request(app).get('/api/conversations').set('Cookie', guest.auth)).body.conversations.some((entry: { id: string }) => entry.id === groupId)).toBe(true);
 
     const promoted = await request(app).patch(`/api/conversations/${groupId}/participants/${moderator.user.id}`).set('Cookie', owner.auth).send({ role: 'MODERATOR' });
@@ -107,6 +111,11 @@ describe('product area gaps', () => {
     expect((await request(app).patch(`/api/conversations/${groupId}/group`).set('Cookie', moderator.auth).send({ description: 'Admin-maintained description.' })).status).toBe(200);
     expect((await request(app).patch(`/api/conversations/${groupId}/participants/${member.user.id}`).set('Cookie', moderator.auth).send({ role: 'MODERATOR' })).status).toBe(200);
     expect((await request(app).post(`/api/conversations/${groupId}/participants`).set('Cookie', moderator.auth).send({ participantIds: [outsider.user.id] })).body.added).toEqual([outsider.user.id]);
+    expect((await request(app).delete(`/api/conversations/${groupId}/participants/${member.user.id}`).set('Cookie', moderator.auth)).status).toBe(200);
+    expect((await request(app).patch(`/api/conversations/${groupId}/participants/${moderator.user.id}`).set('Cookie', moderator.auth).send({ role: 'MEMBER' })).status).toBe(200);
+    expect((await request(app).patch(`/api/conversations/${groupId}/participants/${moderator.user.id}`).set('Cookie', owner.auth).send({ role: 'MEMBER' })).status).toBe(200);
+    expect((await request(app).patch(`/api/conversations/${groupId}/participants/${owner.user.id}`).set('Cookie', owner.auth).send({ role: 'MEMBER' })).status).toBe(409);
+    expect((await request(app).delete(`/api/conversations/${groupId}/participants/${owner.user.id}`).set('Cookie', owner.auth)).status).toBe(409);
     expect((await request(app).patch(`/api/conversations/${groupId}/participants/${moderator.user.id}`).set('Cookie', outsider.auth).send({ role: 'MEMBER' })).status).toBe(403);
     expect((await request(app).patch(`/api/conversations/${groupId}/participants/missing-group-member`).set('Cookie', owner.auth).send({ role: 'MODERATOR' })).status).toBe(404);
 

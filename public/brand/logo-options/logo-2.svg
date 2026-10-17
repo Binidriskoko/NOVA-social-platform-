@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="240" viewBox="0 0 960 240" role="img" aria-labelledby="title">
+  <title id="title">NOVAKOKO Logo 2 - Connected N with wordmark</title>
+  <circle cx="120" cy="120" r="94" fill="none" stroke="#087b43" stroke-width="14"/>
+  <path d="M68 174V66h25l54 65V66h25v108h-24l-55-66v66z" fill="#173b2b"/>
+  <circle cx="120" cy="26" r="10" fill="#b7ef63"/>
+  <text x="254" y="151" fill="#173b2b" font-family="Arial, Helvetica, sans-serif" font-size="78" font-weight="700">NOVAKOKO</text>
+  <path d="M258 178h581" stroke="#b7ef63" stroke-width="7" stroke-linecap="round"/>
+</svg>

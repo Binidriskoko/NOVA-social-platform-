@@ -77,7 +77,7 @@ describe('messaging database responses', () => {
   it('enforces group admin permissions through database-backed membership queries', async () => {
     const tokenFor = (userId: string) => signAccessToken({ sub: userId, email: `${userId}@example.com`, role: 'USER' });
     const authFor = (userId: string) => ({ Authorization: `Bearer ${tokenFor(userId)}` });
-    const roles: Record<string, string> = { creator: 'OWNER', admin: 'MODERATOR', member: 'MEMBER', newcomer: 'MEMBER', storedOwner: 'MEMBER' };
+    const roles: Record<string, string> = { creator: 'OWNER', admin: 'MODERATOR', otherAdmin: 'MODERATOR', member: 'MEMBER', newcomer: 'MEMBER', storedOwner: 'MEMBER' };
 
     vi.spyOn(prisma.session, 'findFirst').mockResolvedValue({ id: 'database-session' } as never);
     vi.spyOn(prisma.user, 'findUnique').mockImplementation((args) => {
@@ -96,6 +96,7 @@ describe('messaging database responses', () => {
     });
     vi.spyOn(prisma.conversationParticipant, 'findMany').mockResolvedValue([] as never);
     vi.spyOn(prisma.conversationParticipant, 'createMany').mockResolvedValue({ count: 1 } as never);
+    vi.spyOn(prisma.conversationParticipant, 'delete').mockResolvedValue({} as never);
     vi.spyOn(prisma.conversationParticipant, 'update').mockImplementation((args) => {
       const updateArgs = args as unknown as { where: { conversationId_userId: { userId: string } }; data: { role: string } };
       const userId = updateArgs.where.conversationId_userId.userId;
@@ -115,19 +116,21 @@ describe('messaging database responses', () => {
     expect((await request(app).patch(rolePath).set(authFor('admin')).send({ role: 'MODERATOR' })).status).toBe(200);
     expect((await request(app).patch(rolePath).set(authFor('storedOwner')).send({ role: 'MODERATOR' })).status).toBe(200);
     expect((await request(app).patch('/api/conversations/database-group/participants/admin').set(authFor('creator')).send({ role: 'MEMBER' })).status).toBe(200);
+    expect((await request(app).patch('/api/conversations/database-group/participants/otherAdmin').set(authFor('admin')).send({ role: 'MEMBER' })).status).toBe(200);
     expect((await request(app).patch('/api/conversations/database-group/participants/storedOwner').set(authFor('creator')).send({ role: 'MODERATOR' })).status).toBe(409);
     expect((await request(app).patch(rolePath).set(authFor('member')).send({ role: 'MEMBER' })).status).toBe(403);
     expect((await request(app).patch('/api/conversations/database-group/participants/member').set(authFor('member')).send({ role: 'MODERATOR' })).status).toBe(403);
     expect((await request(app).patch('/api/conversations/database-group/participants/newcomer').set(authFor('former-admin')).send({ role: 'MODERATOR' })).status).toBe(404);
     expect((await request(app).delete('/api/conversations/database-group/participants/storedOwner').set(authFor('creator'))).status).toBe(409);
     expect((await request(app).delete('/api/conversations/database-group/participants/admin').set(authFor('member'))).status).toBe(403);
+    expect((await request(app).delete('/api/conversations/database-group/participants/otherAdmin').set(authFor('admin'))).status).toBe(200);
     expect((await request(app).post(participantsPath).set(authFor('former-admin')).send({ participantIds: ['newcomer'] })).status).toBe(404);
     expect(prisma.conversationParticipant.findFirst).toHaveBeenCalledWith({
       where: { conversationId: 'database-group', userId: 'former-admin', leftAt: null },
       select: { role: true },
     });
     expect(prisma.conversationParticipant.createMany).toHaveBeenCalledTimes(3);
-    expect(prisma.conversationParticipant.update).toHaveBeenCalledTimes(4);
+    expect(prisma.conversationParticipant.update).toHaveBeenCalledTimes(5);
 
     conversationLookup.mockResolvedValue({ id: 'database-group', ownerId: 'storedOwner', isGroup: true, isChannel: true } as never);
     expect((await request(app).post(participantsPath).set(authFor('admin')).send({ participantIds: ['newcomer'] })).status).toBe(403);

@@ -110,6 +110,13 @@ export function SettingsPage() {
 
         <section className="mt-6 border-t border-slate-200 pt-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
+            <div><h3 className="font-semibold text-slate-900">Profile details</h3><p className="text-sm text-slate-500">Add or update your profile picture and private details.</p></div>
+            <button type="button" onClick={() => navigate('/complete-profile')} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Complete your profile</button>
+          </div>
+        </section>
+
+        <section className="mt-6 border-t border-slate-200 pt-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <MonitorSmartphone className="h-5 w-5 text-indigo-700" aria-hidden="true" />
               <div>

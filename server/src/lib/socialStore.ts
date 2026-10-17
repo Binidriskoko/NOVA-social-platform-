@@ -12,6 +12,12 @@ export type SocialProfileRecord = {
   updatedAt: string;
 };
 
+export type SocialPrivateProfileRecord = {
+  userId: string;
+  dateOfBirth: string | null;
+  address: string | null;
+};
+
 export type SocialPostRecord = {
   id: string;
   authorId: string;
@@ -216,6 +222,7 @@ export type EntitlementRecord = {
 const globalStore = globalThis as typeof globalThis & {
   __novaSocialStore?: {
     profiles: SocialProfileRecord[];
+    privateProfiles: SocialPrivateProfileRecord[];
     posts: SocialPostRecord[];
     stories: StoryRecord[];
     storyViews: StoryViewRecord[];
@@ -243,6 +250,7 @@ const globalStore = globalThis as typeof globalThis & {
 if (!globalStore.__novaSocialStore) {
   globalStore.__novaSocialStore = {
     profiles: [],
+    privateProfiles: [],
     posts: [],
     stories: [],
     storyViews: [],
@@ -280,6 +288,7 @@ export const socialStore = {
     }
     globalStore.__novaSocialStore = {
       profiles: [],
+      privateProfiles: [],
       posts: [],
       stories: [],
       storyViews: [],

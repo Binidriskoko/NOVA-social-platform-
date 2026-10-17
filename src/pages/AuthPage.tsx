@@ -88,7 +88,7 @@ export function AuthPage({ mode }: AuthPageProps) {
       } else {
         await login(formData.username.trim(), password)
       }
-      navigate('/', { replace: true })
+      navigate(isRegister ? '/complete-profile' : '/', { replace: true })
     } catch (error) {
       if (error instanceof ApiError) {
         setFormError(error.message)

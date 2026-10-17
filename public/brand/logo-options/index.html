@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NOVAKOKO Logo Options</title>
+    <style>
+      :root { color-scheme: light; font-family: Georgia, "Times New Roman", serif; color: #18372a; background: #f1f5f0; }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 48px 24px; }
+      main { max-width: 1040px; margin: 0 auto; }
+      h1 { margin: 0; font-size: 32px; font-weight: 600; }
+      .intro { margin: 8px 0 28px; color: #52645a; font: 15px/1.5 system-ui, sans-serif; }
+      .options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+      figure { min-width: 0; margin: 0; padding: 20px; border: 1px solid #d5dfd6; border-radius: 8px; background: #fff; }
+      figure:first-child { grid-row: span 2; }
+      figcaption { margin-bottom: 16px; font: 600 13px/1.4 system-ui, sans-serif; color: #087b43; }
+      .preview { display: grid; min-height: 220px; place-items: center; overflow: hidden; background: #f7f9f7; }
+      .preview img { display: block; width: min(100%, 320px); max-height: 220px; object-fit: contain; }
+      figure:first-child .preview img, figure:last-child .preview img { width: 180px; }
+      .asset { margin-top: 12px; overflow-wrap: anywhere; color: #64746a; font: 12px/1.5 ui-monospace, monospace; }
+      @media (max-width: 620px) { body { padding: 28px 16px; } .options { grid-template-columns: 1fr; } figure:first-child { grid-row: auto; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>NOVAKOKO Logo Options</h1>
+      <p class="intro">Three review-only directions. No option is applied to the application branding.</p>
+      <div class="options">
+        <figure>
+          <figcaption>Logo 1 · Bold N monogram</figcaption>
+          <div class="preview"><img src="logo-1.png" alt="Bold white N monogram on a deep green app tile"></div>
+          <div class="asset">logo-1.svg · logo-1.png</div>
+        </figure>
+        <figure>
+          <figcaption>Logo 2 · Connected N and wordmark</figcaption>
+          <div class="preview"><img src="logo-2.png" alt="Circular connected N symbol with NOVAKOKO wordmark"></div>
+          <div class="asset">logo-2.svg · logo-2.png</div>
+        </figure>
+        <figure>
+          <figcaption>Logo 3 · Clean N with green accent</figcaption>
+          <div class="preview"><img src="logo-3.png" alt="Clean dark N symbol with two green accents"></div>
+          <div class="asset">logo-3.svg · logo-3.png</div>
+        </figure>
+      </div>
+    </main>
+  </body>
+</html>

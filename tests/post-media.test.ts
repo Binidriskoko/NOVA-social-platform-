@@ -1,7 +1,7 @@
+import { isVideoPostMediaUrl, postMediaFileType, POST_IMAGE_MAX_BYTES, POST_VIDEO_MAX_BYTES, validatePostMediaFile } from '../src/lib/postMedia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sidebarItems } from '../src/components/AppShell'
 import { uploadVideo } from '../src/lib/api'
-import { isVideoPostMediaUrl, postMediaFileType, validatePostMediaFile } from '../src/lib/postMedia'
 import { canonicalPostUrl, sharePostLink } from '../src/lib/postSharing'
 
 describe('post media selection and video navigation', () => {
@@ -14,13 +14,17 @@ describe('post media selection and video navigation', () => {
     const jpeg = new File(['image'], 'photo.jpeg', { type: 'image/jpeg' })
     const mp4 = new File(['video'], 'clip.mp4', { type: 'video/mp4' })
     const mismatched = new File(['video'], 'clip.mp4', { type: 'video/quicktime' })
-    const oversized = new File([new Uint8Array(10 * 1024 * 1024 + 1)], 'large.mp4', { type: 'video/mp4' })
+    const acceptedLargeVideo = new File([new Uint8Array(11 * 1024 * 1024)], 'large.mp4', { type: 'video/mp4' })
+    const oversizedVideo = new File([new Uint8Array(POST_VIDEO_MAX_BYTES + 1)], 'oversized.mp4', { type: 'video/mp4' })
+    const oversizedImage = new File([new Uint8Array(POST_IMAGE_MAX_BYTES + 1)], 'large.png', { type: 'image/png' })
 
     expect(postMediaFileType(jpeg)?.kind).toBe('image')
     expect(postMediaFileType(mp4)?.kind).toBe('video')
     expect(validatePostMediaFile(jpeg)).toBe('')
     expect(validatePostMediaFile(mismatched)).toMatch(/Choose a JPEG/)
-    expect(validatePostMediaFile(oversized)).toMatch(/10 MB or smaller/)
+    expect(validatePostMediaFile(acceptedLargeVideo)).toBe('')
+    expect(validatePostMediaFile(oversizedVideo)).toMatch(/100 MB or smaller/)
+    expect(validatePostMediaFile(oversizedImage)).toMatch(/10 MB or smaller/)
     expect(isVideoPostMediaUrl('/api/media/files/video.mp4')).toBe(true)
     expect(isVideoPostMediaUrl('https://cdn.example.test/clip.webm?download=1')).toBe(true)
     expect(isVideoPostMediaUrl('/api/media/files/image.webp')).toBe(false)

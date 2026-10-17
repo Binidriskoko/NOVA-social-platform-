@@ -8,6 +8,7 @@ import { reviewContentForSafety } from '../lib/moderation.js';
 import { isNotificationEnabled } from '../lib/platform.js';
 import { requireAuth, requireActiveAccountIfAuthenticated } from '../middleware/auth.js';
 import { mediaKeyFromUrl, uploadedMediaBelongsTo, uploadedVideoBelongsTo, videoMediaKeyFromUrl } from '../lib/mediaStorage.js';
+import { decryptPrivateAddress, encryptPrivateAddress } from '../lib/privateProfile.js';
 
 function isSafeMediaUrl(value: string) {
   if (value === '' || mediaKeyFromUrl(value) || videoMediaKeyFromUrl(value)) return true;
@@ -27,6 +28,13 @@ const updateProfileSchema = z.object({
   website: z.string().trim().max(200).url().optional().or(z.literal('')),
   location: z.string().trim().max(80).optional(),
 });
+const privateProfileSchema = z.object({
+  dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value && date.getTime() <= Date.now();
+  }, 'Enter a valid date of birth in the past.').optional(),
+  address: z.string().trim().max(300).optional(),
+}).refine((payload) => Object.keys(payload).length > 0, { message: 'Provide a date of birth or address.' });
 
 const createPostSchema = z.object({
   content: z.string().trim().min(1).max(2500),
@@ -649,13 +657,7 @@ socialRouter.put('/users/me/profile', requireAuth, requireAccountAccess, async (
     ? { ...existing, ...profileData, updatedAt: new Date().toISOString() }
     : {
         userId,
-        displayName: null,
-        username: null,
-        bio: null,
-        avatarUrl: null,
-        coverUrl: null,
-        website: null,
-        location: null,
+        ...profileData,
         updatedAt: new Date().toISOString(),
       };
 
@@ -679,6 +681,56 @@ socialRouter.put('/users/me/profile', requireAuth, requireAccountAccess, async (
   }
 
   return res.json({ profile: fallbackProfile });
+});
+
+socialRouter.get('/users/me/private-profile', requireAuth, requireAccountAccess, async (req, res) => {
+  const userId = req.user!.id;
+  const dbAvailable = await isDatabaseAvailable();
+  const [privateProfile, profile] = dbAvailable
+    ? await Promise.all([
+        prisma.privateProfile.findUnique({ where: { userId }, select: { dateOfBirth: true, addressCiphertext: true, addressIv: true, addressTag: true } }),
+        prisma.profile.findUnique({ where: { userId }, select: { avatarUrl: true } }),
+      ])
+    : [socialStore.state.privateProfiles.find((entry) => entry.userId === userId) ?? null, getProfileForUserId(userId)];
+  return res.json({
+    dateOfBirth: privateProfile?.dateOfBirth instanceof Date ? privateProfile.dateOfBirth.toISOString().slice(0, 10) : privateProfile?.dateOfBirth ?? '',
+    address: privateProfile && 'addressCiphertext' in privateProfile ? decryptPrivateAddress(privateProfile) ?? '' : privateProfile?.address ?? '',
+    avatarUrl: profile?.avatarUrl ?? '',
+  });
+});
+
+socialRouter.put('/users/me/private-profile', requireAuth, requireAccountAccess, async (req, res) => {
+  const validation = privateProfileSchema.safeParse(req.body ?? {});
+  if (!validation.success) return res.status(400).json({ message: validation.error.issues[0]?.message ?? 'Invalid private profile.' });
+  const userId = req.user!.id;
+  const { dateOfBirth, address } = validation.data;
+  const dbAvailable = await isDatabaseAvailable();
+  if (dbAvailable) {
+    const encryptedAddress = address === undefined ? null : address ? encryptPrivateAddress(address) : null;
+    const updated = await prisma.privateProfile.upsert({
+      where: { userId },
+      create: {
+        userId,
+        dateOfBirth: dateOfBirth ? new Date(`${dateOfBirth}T00:00:00.000Z`) : null,
+        ...(address === undefined ? {} : encryptedAddress ?? { addressCiphertext: null, addressIv: null, addressTag: null }),
+      },
+      update: {
+        ...(dateOfBirth === undefined ? {} : { dateOfBirth: new Date(`${dateOfBirth}T00:00:00.000Z`) }),
+        ...(address === undefined ? {} : encryptedAddress ?? { addressCiphertext: null, addressIv: null, addressTag: null }),
+      },
+      select: { dateOfBirth: true, addressCiphertext: true, addressIv: true, addressTag: true },
+    });
+    return res.json({ dateOfBirth: updated.dateOfBirth?.toISOString().slice(0, 10) ?? '', address: decryptPrivateAddress(updated) ?? '' });
+  }
+  const current = socialStore.state.privateProfiles.find((entry) => entry.userId === userId);
+  const updated = {
+    userId,
+    dateOfBirth: dateOfBirth ?? current?.dateOfBirth ?? null,
+    address: address === undefined ? current?.address ?? null : address || null,
+  };
+  if (current) Object.assign(current, updated);
+  else socialStore.state.privateProfiles.push(updated);
+  return res.json({ dateOfBirth: updated.dateOfBirth ?? '', address: updated.address ?? '' });
 });
 
 socialRouter.post('/users/:id/follow', requireAuth, requireAccountAccess, async (req, res) => {

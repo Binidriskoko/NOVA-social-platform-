@@ -3,7 +3,7 @@ import { callScreenState, callViewportClassName, formatCallDuration } from '../s
 import { cameraSwitchErrorMessage, chooseNextCamera, switchToNextCamera } from '../src/lib/cameraSwitching'
 import { sendPostToConversation } from '../src/lib/postSharing'
 import { isVideoStoryMedia, sendStoryReply } from '../src/lib/storyReplies'
-import { upsertMessageById } from '../src/lib/messageList'
+import { updateConversationPreviewFromMessage, upsertMessageById } from '../src/lib/messageList'
 
 describe('group video camera switching', () => {
   const devices = [
@@ -69,6 +69,22 @@ describe('message list reconciliation', () => {
 
     expect(afterSocketEvent.filter((message) => message.id === 'voice-1')).toHaveLength(1)
     expect(afterSocketEvent).toHaveLength(2)
+  })
+
+  it('updates a conversation preview once when both the send response and realtime event arrive', () => {
+    const message = { id: 'message-1', conversationId: 'chat-1', senderId: 'other', text: 'Fresh message', createdAt: '2026-10-17T10:00:00.000Z', updatedAt: '2026-10-17T10:00:00.000Z', contentType: 'TEXT' }
+    const conversations = [{ id: 'chat-1', updatedAt: '', lastMessageAt: null, lastMessagePreview: null, unreadCount: 0 }]
+    const fromResponse = updateConversationPreviewFromMessage(conversations, message, 'self', '')
+    const fromEvent = updateConversationPreviewFromMessage(fromResponse, message, 'self', '')
+    const fromLateOldEvent = updateConversationPreviewFromMessage(fromEvent, {
+      ...message,
+      id: 'message-older',
+      text: 'Older message',
+      createdAt: '2026-10-17T09:00:00.000Z',
+    }, 'self', '')
+
+    expect(fromLateOldEvent[0].lastMessagePreview).toBe('Fresh message')
+    expect(fromLateOldEvent[0].unreadCount).toBe(1)
   })
 })
 

@@ -10,6 +10,7 @@ Copy `server/.env.example` to `server/.env` and set:
 - `HOST=0.0.0.0` and `PORT=4000` (or the values supplied by the runtime)
 - `DATABASE_URL` to the production PostgreSQL connection string
 - `JWT_SECRET` to a unique random value of at least 32 characters, stored only in the deployment secret manager
+- `REGISTRATION_DATA_ENCRYPTION_KEY` to a stable random value of at least 32 characters for encrypted private profile data; retain it across deploys and backups
 - `JWT_EXPIRES_IN`, `COOKIE_NAME`, and `COOKIE_SAME_SITE`; the production default is `none` for the cross-site Vercel/Render deployment, and secure cookies require HTTPS. Use `lax` or `strict` only when the web and API are same-site.
 - `CORS_ORIGIN` to one or more exact HTTPS web origins separated by commas; wildcards are rejected in production
 - `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS`, and `AUTH_RATE_LIMIT_MAX`
@@ -89,7 +90,7 @@ AI assistance endpoints also return HTTP 503 until a real AI provider is integra
 
 ## User media
 
-Authenticated image uploads use `POST /api/media/uploads` with a `file` form field. JPEG, PNG, and WebP inputs up to 10 MB are decoded, orientation-corrected, resized, and re-encoded as WebP. Message voice, video, PDF, and DOCX uploads use `POST /api/media/attachments`, also with a `file` field and a 10 MB limit. The server checks the declared type, filename extension, and file signature. These objects use the existing media-object storage and are only served to their owner or an authorized participant of an active, non-deleted message. This existing production adapter stores bytes in PostgreSQL; keep the upload limit in place and provide a durable object-storage adapter before accepting larger media. Production never falls back to process memory.
+Authenticated image uploads use `POST /api/media/uploads` with a `file` form field. JPEG, PNG, and WebP inputs up to 10 MB are decoded, orientation-corrected, resized, and re-encoded as WebP. Video uploads use the authenticated `POST /api/media/videos` endpoint with a server-enforced 100 MB limit; message video clients use this endpoint too. Voice, PDF, and DOCX uploads remain limited to 10 MB on `POST /api/media/attachments`. The server validates authentication, MIME type, extension, and file signature. The existing production adapter buffers each upload in application memory and stores bytes in PostgreSQL. Vercel documents a 4.5 MB request/response limit for Vercel Functions, but this repository forwards `/api/*` through an external rewrite to Render rather than a Vercel Function. Render's published web-service documentation does not specify an inbound request-body maximum. The deployed ingress limit and PostgreSQL capacity for 100 MB are therefore unverified until an end-to-end upload test against the actual services. A streaming object-storage adapter is needed to avoid buffering large videos. Production never falls back to process memory.
 
 ## Payments
 

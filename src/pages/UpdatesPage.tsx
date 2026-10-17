@@ -5,6 +5,7 @@ import { Avatar } from '../components/ui/Avatar'
 import { Button } from '../components/ui/Button'
 import { useAuth } from '../context/AuthContext'
 import { apiRequest, resolveMediaUrl, uploadMedia, uploadVideo } from '../lib/api'
+import { postMediaFileType, POST_IMAGE_MAX_BYTES, POST_VIDEO_MAX_BYTES } from '../lib/postMedia'
 
 type StatusRecord = {
   id: string
@@ -101,8 +102,10 @@ export function UpdatesPage() {
       mp4: 'video/mp4', webm: 'video/webm', ogg: 'video/ogg',
     }
     const extension = selected.name.split('.').at(-1)?.toLowerCase() ?? ''
-    if (selected.size > 10 * 1024 * 1024) {
-      setError('Status media must be 10 MB or smaller.')
+    const mediaType = postMediaFileType(selected)
+    const maxBytes = mediaType?.kind === 'video' ? POST_VIDEO_MAX_BYTES : POST_IMAGE_MAX_BYTES
+    if (selected.size > maxBytes) {
+      setError(mediaType?.kind === 'video' ? 'Videos must be 100 MB or smaller.' : 'Images must be 10 MB or smaller.')
       return
     }
     if (!types[extension] || selected.type !== types[extension]) {
@@ -205,7 +208,7 @@ export function UpdatesPage() {
           </div>
           {showComposer ? <form onSubmit={(event) => { event.preventDefault(); void publish() }} className="mt-4 space-y-3 rounded-xl bg-[#f4f7f4] p-3">
             <label className="block text-xs font-medium text-slate-600">{composerMode === 'text' ? 'Text status' : 'Caption (optional)'}<textarea value={text} onChange={(event) => setText(event.target.value)} maxLength={500} rows={3} placeholder={composerMode === 'text' ? 'Write an update' : 'Add a caption'} className="mt-1 w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900" /></label>
-            {previewUrl ? <div className="relative flex justify-center rounded-xl bg-slate-950 p-2">{file?.type.startsWith('video/') ? <video controls src={previewUrl} className="max-h-64 max-w-full rounded-lg" /> : <img src={previewUrl} alt="Status preview" className="max-h-64 max-w-full rounded-lg object-contain" />}<button type="button" onClick={clearMedia} aria-label="Remove status media" className="absolute right-3 top-3 rounded-full bg-white p-1.5 text-slate-700"><X className="h-4 w-4" /></button></div> : composerMode === 'media' ? <button type="button" onClick={() => mediaInputRef.current?.click()} className="flex w-full items-center gap-2 rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700"><ImagePlus className="h-4 w-4 text-[#087b43]" />Choose an image or video (up to 10 MB)</button> : null}
+            {previewUrl ? <div className="relative flex justify-center rounded-xl bg-slate-950 p-2">{file?.type.startsWith('video/') ? <video controls src={previewUrl} className="max-h-64 max-w-full rounded-lg" /> : <img src={previewUrl} alt="Status preview" className="max-h-64 max-w-full rounded-lg object-contain" />}<button type="button" onClick={clearMedia} aria-label="Remove status media" className="absolute right-3 top-3 rounded-full bg-white p-1.5 text-slate-700"><X className="h-4 w-4" /></button></div> : composerMode === 'media' ? <button type="button" onClick={() => mediaInputRef.current?.click()} className="flex w-full items-center gap-2 rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700"><ImagePlus className="h-4 w-4 text-[#087b43]" />Images up to 10 MB; videos up to 100 MB</button> : null}
             <div className="flex justify-end gap-2"><Button variant="ghost" size="sm" type="button" onClick={cancelComposer} disabled={busy}>Cancel</Button><Button variant="primary" size="sm" type="submit" disabled={busy || (!text.trim() && !file)}>{busy ? 'Publishing…' : 'Publish status'}</Button></div>
           </form> : null}
         </section>

@@ -15,6 +15,7 @@ import { DownloadPage } from './pages/DownloadPage'
 import { AiPage } from './pages/AiPage'
 import { UpdatesPage } from './pages/UpdatesPage'
 import { VideosPage } from './pages/VideosPage'
+import { CompleteProfilePage } from './pages/CompleteProfilePage'
 
 const LivePage = lazy(() => import('./pages/LivePage').then(({ LivePage: page }) => ({ default: page })))
 const CallsPage = lazy(() => import('./pages/CallsPage').then(({ CallsPage: page }) => ({ default: page })))
@@ -79,6 +80,7 @@ function AppRoutes() {
       </Route>
 
       <Route element={<ProtectedRoute />}>
+        <Route path="/complete-profile" element={<CompleteProfilePage />} />
         <Route path="/" element={<AppShell><HomePage /></AppShell>} />
         <Route path="/explore" element={<AppShell><ExplorePage /></AppShell>} />
         <Route path="/create" element={<Navigate to="/?create=1" replace />} />

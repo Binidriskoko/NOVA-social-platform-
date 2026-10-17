@@ -5,9 +5,9 @@ import { Avatar } from '../components/ui/Avatar'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { useAuth } from '../context/AuthContext'
-import { apiRequest, fetchMediaBlob, resolveMediaUrl, uploadMedia, uploadMessageAttachment } from '../lib/api'
+import { apiRequest, fetchMediaBlob, resolveMediaUrl, uploadMedia, uploadMessageAttachment, uploadVideo } from '../lib/api'
 import { openAuthenticatedEventStream } from '../lib/eventStream'
-import { upsertMessageById } from '../lib/messageList'
+import { updateConversationPreviewFromMessage, upsertMessageById } from '../lib/messageList'
 
 type ConversationParticipant = { userId: string; role?: string; user?: { id: string; name: string; avatar?: string } }
 type ConversationListItem = {
@@ -96,6 +96,12 @@ export function MessagesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [conversations, setConversations] = useState<ConversationListItem[]>([])
   const [selectedId, setSelectedId] = useState('')
+  const selectedIdRef = useRef(selectedId)
+  const userIdRef = useRef(user?.id)
+  useEffect(() => {
+    selectedIdRef.current = selectedId
+    userIdRef.current = user?.id
+  }, [selectedId, user?.id])
   const [messages, setMessages] = useState<MessageItem[]>([])
   const [draft, setDraft] = useState('')
   const [loading, setLoading] = useState(true)
@@ -118,7 +124,10 @@ export function MessagesPage() {
   const groupImagePreviewRef = useRef('')
   const [groupSettingsBusy, setGroupSettingsBusy] = useState(false)
   const [groupActionBusy, setGroupActionBusy] = useState(false)
+  const [groupSuccess, setGroupSuccess] = useState('')
   const [selectedAddParticipants, setSelectedAddParticipants] = useState<string[]>([])
+  const [addMemberSearch, setAddMemberSearch] = useState('')
+  const [memberBeingManaged, setMemberBeingManaged] = useState<ConversationParticipant | null>(null)
   const [isGroup, setIsGroup] = useState(false)
   const [groupName, setGroupName] = useState('')
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([])
@@ -220,14 +229,15 @@ export function MessagesPage() {
     const onMessage = (event: MessageEvent<string>) => {
       try {
         const payload = JSON.parse(event.data) as { conversationId: string; message?: MessageItem; messageId?: string; reactions?: MessageReaction[]; deleted?: boolean }
-        if (payload.conversationId === selectedId) {
-          if (payload.message) {
+        if (payload.message) {
+          if (payload.conversationId === selectedIdRef.current) {
             setMessages((current) => upsertMessageById(current, payload.message!))
-          } else if (payload.messageId && payload.reactions) {
-            setMessages((current) => current.map((message) => message.id === payload.messageId ? { ...message, reactions: payload.reactions } : message))
           }
+          setConversations((current) => updateConversationPreviewFromMessage(current, payload.message!, userIdRef.current, selectedIdRef.current, payload.deleted))
+          if (payload.deleted) void loadConversations()
+        } else if (payload.conversationId === selectedIdRef.current && payload.messageId && payload.reactions) {
+          setMessages((current) => current.map((message) => message.id === payload.messageId ? { ...message, reactions: payload.reactions } : message))
         }
-        void loadConversations()
       } catch {
         setError('A live message update could not be read. Reopen the conversation to refresh.')
       }
@@ -243,7 +253,7 @@ export function MessagesPage() {
     source.addEventListener('message:new', onMessage)
     source.addEventListener('message:read', onRead)
     return () => source.close()
-  }, [selectedId])
+  }, [])
 
   useEffect(() => {
     if (!selectedId) {
@@ -335,6 +345,7 @@ export function MessagesPage() {
     setGroupImage()
     setShowAddMembers(openAddMembers)
     setSelectedAddParticipants([])
+    setGroupSuccess('')
     setShowGroupProfile(true)
     if (openAddMembers && !directory.length) void loadDirectory()
   }
@@ -366,12 +377,15 @@ export function MessagesPage() {
     setGroupActionBusy(true)
     try {
       setError('')
+      setGroupSuccess('')
       await apiRequest(`/api/conversations/${encodeURIComponent(activeConversation.id)}/participants`, {
         method: 'POST',
         body: JSON.stringify({ participantIds: selectedAddParticipants }),
       })
+      setGroupSuccess('Members added.')
       setShowAddMembers(false)
       setSelectedAddParticipants([])
+      setAddMemberSearch('')
       await loadConversations()
     } catch (addError) {
       setError(addError instanceof Error ? addError.message : 'Unable to add members to this group.')
@@ -379,18 +393,37 @@ export function MessagesPage() {
       setGroupActionBusy(false)
     }
   }
-  const changeGroupMemberRole = async (participant: ConversationParticipant) => {
+  const changeGroupMemberRole = async (participant: ConversationParticipant, role: 'MEMBER' | 'MODERATOR' = participant.role === 'MODERATOR' ? 'MEMBER' : 'MODERATOR') => {
     if (!activeConversation || !canManageActiveGroup || !participant.userId || groupActionBusy) return
     setGroupActionBusy(true)
     try {
       setError('')
+      setGroupSuccess('')
       await apiRequest(`/api/conversations/${encodeURIComponent(activeConversation.id)}/participants/${encodeURIComponent(participant.userId)}`, {
         method: 'PATCH',
-        body: JSON.stringify({ role: participant.role === 'MODERATOR' ? 'MEMBER' : 'MODERATOR' }),
+        body: JSON.stringify({ role }),
       })
+      setGroupSuccess('Member role updated.')
+      setMemberBeingManaged(null)
       await loadConversations()
     } catch (roleError) {
       setError(roleError instanceof Error ? roleError.message : 'Unable to update this member role.')
+    } finally {
+      setGroupActionBusy(false)
+    }
+  }
+  const removeGroupMember = async (participant: ConversationParticipant) => {
+    if (!activeConversation || !canManageActiveGroup || !participant.userId || groupActionBusy) return
+    setGroupActionBusy(true)
+    try {
+      setError('')
+      setGroupSuccess('')
+      await apiRequest(`/api/conversations/${encodeURIComponent(activeConversation.id)}/participants/${encodeURIComponent(participant.userId)}`, { method: 'DELETE' })
+      setGroupSuccess('Member removed.')
+      setMemberBeingManaged(null)
+      await loadConversations()
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : 'Unable to remove this member.')
     } finally {
       setGroupActionBusy(false)
     }
@@ -436,9 +469,10 @@ export function MessagesPage() {
       setMediaFile(null)
       return
     }
-    if (file.size > 10 * 1024 * 1024) {
+    const maxFileBytes = type === 'VIDEO' ? 100 * 1024 * 1024 : 10 * 1024 * 1024
+    if (file.size > maxFileBytes) {
       setMediaFile(null)
-      setError('Attachments must be 10 MB or smaller.')
+      setError(type === 'VIDEO' ? 'Videos must be 100 MB or smaller.' : 'Attachments must be 10 MB or smaller.')
       return
     }
     const extension = file.name.split('.').at(-1)?.toLowerCase()
@@ -516,7 +550,7 @@ export function MessagesPage() {
       setSendFailed(false)
       setError('')
       const attachmentUrl = mediaFile
-        ? (composeType === 'IMAGE' ? await uploadMedia(mediaFile) : await uploadMessageAttachment(mediaFile)).mediaUrl
+        ? (composeType === 'IMAGE' ? await uploadMedia(mediaFile) : composeType === 'VIDEO' ? await uploadVideo(mediaFile) : await uploadMessageAttachment(mediaFile)).mediaUrl
         : mediaUrl.trim()
       if (mediaFile) {
         setMediaUrl(attachmentUrl)
@@ -533,6 +567,7 @@ export function MessagesPage() {
         }),
       })
       setMessages((current) => upsertMessageById(current, response.message))
+      setConversations((current) => updateConversationPreviewFromMessage(current, response.message, user?.id, selectedId))
       setDraft('')
       setMediaUrl('')
       setMediaFile(null)
@@ -547,7 +582,6 @@ export function MessagesPage() {
       setEventDate('')
       setComposeType('TEXT')
       setReplyTarget(null)
-      await loadConversations()
     } catch (sendError) {
       setSendFailed(true)
       setError(sendError instanceof Error ? sendError.message : 'Unable to send message.')
@@ -908,6 +942,7 @@ export function MessagesPage() {
                 <input ref={documentInputRef} type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="hidden" aria-label="Choose a document" onChange={(event) => { setComposeType('DOCUMENT'); selectMediaFile(event.target.files?.[0], 'DOCUMENT'); event.target.value = '' }} />
                 {replyTarget ? <div className="mb-2 flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600"><span className="truncate">Replying to: {replyTarget.text || replyTarget.contentType}</span><button type="button" onClick={() => setReplyTarget(null)} aria-label="Cancel reply"><X className="h-4 w-4" /></button></div> : null}
                 {['IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE'].includes(composeType) ? <div className="mb-2 flex items-center gap-2"><input type="url" aria-label="Attachment URL" value={mediaUrl} onChange={(event) => { setMediaUrl(event.target.value); setMediaFile(null) }} placeholder="Paste an HTTPS attachment link" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-xs" />{mediaFile ? <span className="max-w-32 truncate text-xs text-slate-500">{mediaFile.name}</span> : null}</div> : null}
+                {composeType === 'VIDEO' ? <p className="mb-2 text-xs text-slate-500">Video uploads up to 100 MB.</p> : null}
                 {mediaFile && mediaPreviewUrl ? <div className="mb-2 flex items-center justify-between rounded-lg bg-slate-50 p-2 text-xs text-slate-600">{composeType === 'IMAGE' ? <img src={mediaPreviewUrl} alt="Attachment preview" className="h-14 w-14 rounded-lg object-cover" /> : composeType === 'VIDEO' ? <video controls src={mediaPreviewUrl} className="max-h-16 rounded-lg" /> : composeType === 'VOICE' ? <audio controls src={mediaPreviewUrl} className="max-w-full" /> : <span className="truncate">{mediaFile.name}</span>}<button type="button" onClick={() => setMediaFile(null)} aria-label="Remove attachment" className="rounded-full p-1 text-slate-500 hover:bg-slate-200"><X className="h-4 w-4" /></button></div> : null}
                 {composeType === 'CONTACT' ? <div className="mb-2 flex gap-2"><input aria-label="Contact name" value={contactName} onChange={(event) => setContactName(event.target.value)} placeholder="Contact name" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm" /><input aria-label="Contact phone" value={contactPhone} onChange={(event) => setContactPhone(event.target.value)} placeholder="Phone number" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm" /></div> : null}
                 {composeType === 'LOCATION' ? <div className="mb-2 flex gap-2"><input aria-label="Location label" value={locationLabel} onChange={(event) => setLocationLabel(event.target.value)} placeholder="Place name" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm" /><input aria-label="Latitude" type="number" step="any" value={latitude} onChange={(event) => setLatitude(event.target.value)} placeholder="Latitude" className="w-24 rounded-lg border border-slate-200 px-2 py-2 text-xs" /><input aria-label="Longitude" type="number" step="any" value={longitude} onChange={(event) => setLongitude(event.target.value)} placeholder="Longitude" className="w-24 rounded-lg border border-slate-200 px-2 py-2 text-xs" /></div> : null}
@@ -934,11 +969,20 @@ export function MessagesPage() {
               <Avatar src={groupImagePreview || resolveMediaUrl(activeConversation.imageUrl)} alt={activeConversation.name ?? 'Group'} size="lg" />
               <div className="min-w-0"><h2 id="group-profile-title" className="truncate text-xl font-semibold">{activeConversation.name ?? 'Group conversation'}</h2><p className="text-xs text-slate-500">{activeConversation.participants.length} members</p></div>
             </div>
-            <button type="button" onClick={() => { setShowGroupProfile(false); setShowAddMembers(false) }} aria-label="Close group details" className="rounded-full p-2 text-slate-500 hover:bg-slate-100"><X className="h-5 w-5" aria-hidden="true" /></button>
+            <div className="flex shrink-0 items-center gap-1">
+              {canManageActiveGroup ? <button type="button" onClick={() => {
+                setShowAddMembers((open) => !open)
+                setSelectedAddParticipants([])
+                setAddMemberSearch('')
+                if (!directory.length) void loadDirectory()
+              }} aria-label={showAddMembers ? 'Cancel adding group members' : 'Add group members'} title={showAddMembers ? 'Cancel add' : 'Add member'} className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-indigo-50 text-indigo-700 hover:bg-indigo-100">{showAddMembers ? <X className="h-4 w-4" aria-hidden="true" /> : <Plus className="h-5 w-5" aria-hidden="true" />}</button> : null}
+              <button type="button" onClick={() => { setShowGroupProfile(false); setShowAddMembers(false); setMemberBeingManaged(null) }} aria-label="Close group details" className="rounded-full p-2 text-slate-500 hover:bg-slate-100"><X className="h-5 w-5" aria-hidden="true" /></button>
+            </div>
           </header>
 
           <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-slate-600">{activeConversation.description || 'No group description yet.'}</p>
           {error ? <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
+          {groupSuccess ? <p role="status" className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{groupSuccess}</p> : null}
 
           {canManageActiveGroup ? <form onSubmit={(event) => void saveGroupProfile(event)} className="mt-4 space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
             <h3 className="text-sm font-semibold">Group settings</h3>
@@ -968,21 +1012,17 @@ export function MessagesPage() {
 
           <div className="mt-5 flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold">Members</h3>
-            {canManageActiveGroup ? <button type="button" onClick={() => {
-              setShowAddMembers((open) => !open)
-              setSelectedAddParticipants([])
-              if (!directory.length) void loadDirectory()
-            }} aria-label={showAddMembers ? 'Cancel adding group members' : 'Add group members'} title={showAddMembers ? 'Cancel add' : 'Add member'} className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-indigo-50 text-indigo-700 hover:bg-indigo-100">{showAddMembers ? <X className="h-4 w-4" aria-hidden="true" /> : <Plus className="h-5 w-5" aria-hidden="true" />}</button> : null}
           </div>
           {showAddMembers && canManageActiveGroup ? <section aria-label="Add group members" className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
             {directoryError ? <p role="alert" className="text-xs text-rose-700">{directoryError}</p> : null}
             {directoryLoading ? <p role="status" className="py-2 text-xs text-slate-500">Loading members…</p> : null}
+            <input type="search" aria-label="Search non-members" value={addMemberSearch} onChange={(event) => setAddMemberSearch(event.target.value)} placeholder="Search people" className="mb-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" />
             <div className="max-h-36 space-y-1 overflow-y-auto">
-              {directory.filter((person) => !activeConversation.participants.some((participant) => participant.userId === person.id)).map((person) => <label key={person.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 hover:bg-white">
+              {directory.filter((person) => !activeConversation.participants.some((participant) => participant.userId === person.id) && person.name.toLowerCase().includes(addMemberSearch.trim().toLowerCase())).map((person) => <label key={person.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 hover:bg-white">
                 <input type="checkbox" checked={selectedAddParticipants.includes(person.id)} onChange={(event) => setSelectedAddParticipants((current) => event.target.checked ? [...current, person.id] : current.filter((id) => id !== person.id))} />
                 <span className="text-sm text-slate-800">{person.name}</span>
               </label>)}
-              {directory.filter((person) => !activeConversation.participants.some((participant) => participant.userId === person.id)).length === 0 ? <p className="py-2 text-xs text-slate-500">Everyone is already in this group.</p> : null}
+              {!directoryLoading && !directoryError && directory.filter((person) => !activeConversation.participants.some((participant) => participant.userId === person.id) && person.name.toLowerCase().includes(addMemberSearch.trim().toLowerCase())).length === 0 ? <p className="py-2 text-xs text-slate-500">{directory.some((person) => !activeConversation.participants.some((participant) => participant.userId === person.id)) ? 'No people match your search.' : 'Everyone is already in this group.'}</p> : null}
             </div>
             <div className="mt-2 flex justify-end"><Button variant="primary" size="sm" disabled={!selectedAddParticipants.length || groupActionBusy || directoryLoading} onClick={() => void addGroupMembers()}>{groupActionBusy ? 'Adding…' : 'Add selected'}</Button></div>
           </section> : null}
@@ -992,9 +1032,16 @@ export function MessagesPage() {
               <Avatar src={participant.user?.avatar ?? ''} alt={participant.user?.name ?? 'Member'} size="sm" />
               <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800">{participant.user?.name ?? participant.userId}{participant.userId === user?.id ? ' (you)' : ''}</span>
               <span className="text-xs text-slate-500">{participant.role === 'OWNER' ? 'Owner' : participant.role === 'MODERATOR' ? 'Admin' : 'Member'}</span>
-              {canManageActiveGroup && participant.userId !== user?.id && participant.role !== 'OWNER' ? <button type="button" disabled={groupActionBusy} onClick={() => void changeGroupMemberRole(participant)} className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">{groupActionBusy ? 'Updating…' : participant.role === 'MODERATOR' ? 'Remove admin' : 'Make admin'}</button> : null}
+              {canManageActiveGroup && participant.userId !== user?.id && participant.role !== 'OWNER' ? <button type="button" onClick={() => setMemberBeingManaged(participant)} aria-label={`Manage group member ${participant.user?.name ?? participant.userId}`} className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50">Manage</button> : null}
             </li>)}
           </ul>
+          {memberBeingManaged ? <div className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/45 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-labelledby="member-management-title">
+            <section className="w-full max-w-sm rounded-t-2xl bg-white p-4 shadow-xl sm:rounded-2xl">
+              <div className="flex items-center justify-between gap-3"><h3 id="member-management-title" className="text-base font-semibold">Manage {memberBeingManaged.user?.name ?? 'member'}</h3><button type="button" onClick={() => setMemberBeingManaged(null)} aria-label="Close member management" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X className="h-4 w-4" /></button></div>
+              {memberBeingManaged.role === 'MODERATOR' ? <button type="button" disabled={groupActionBusy} onClick={() => void changeGroupMemberRole(memberBeingManaged, 'MEMBER')} className="mt-3 w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">Remove admin</button> : <button type="button" disabled={groupActionBusy} onClick={() => void changeGroupMemberRole(memberBeingManaged, 'MODERATOR')} className="mt-3 w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">Make admin</button>}
+              <button type="button" disabled={groupActionBusy} onClick={() => void removeGroupMember(memberBeingManaged)} className="mt-1 w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-50">Remove from group</button>
+            </section>
+          </div> : null}
         </section>
       </div> : null}
     </div>

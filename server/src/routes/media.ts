@@ -8,6 +8,7 @@ import { socialStore } from '../lib/socialStore.js';
 import { requireActiveAccountIfAuthenticated, requireAuth } from '../middleware/auth.js';
 
 const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
 const attachmentTypes = new Map([
   ['audio/webm', 'webm'],
   ['audio/ogg', 'ogg'],
@@ -70,7 +71,7 @@ function uploadAttachmentFile(req: Request, res: Response, next: NextFunction) {
 function uploadVideoFile(req: Request, res: Response, next: NextFunction) {
   multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_MEDIA_BYTES, files: 1 },
+    limits: { fileSize: MAX_VIDEO_BYTES, files: 1 },
     fileFilter(_request, file, callback) {
       const extension = file.originalname.split('.').at(-1)?.toLowerCase();
       if (!['video/mp4', 'video/webm', 'video/ogg'].includes(file.mimetype)
@@ -84,7 +85,7 @@ function uploadVideoFile(req: Request, res: Response, next: NextFunction) {
     if (error instanceof multer.MulterError) {
       const tooLarge = error.code === 'LIMIT_FILE_SIZE';
       return res.status(tooLarge ? 413 : 400).json({
-        message: tooLarge ? 'Videos must be 10 MB or smaller.' : 'Choose an MP4, WebM, or Ogg video.',
+        message: tooLarge ? 'Videos must be 100 MB or smaller.' : 'Choose an MP4, WebM, or Ogg video.',
       });
     }
     return next(error);

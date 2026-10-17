@@ -150,7 +150,7 @@ export function PostComposer({ onClose, onPublished, inline = false }: PostCompo
             />
           </label>
         </div>
-        <p className="mt-2 text-xs text-slate-500">JPEG, PNG, WebP, MP4, WebM, or Ogg · Up to 10 MB</p>
+        <p className="mt-2 text-xs text-slate-500">Images up to 10 MB · Videos up to 100 MB</p>
 
         {mediaFile && selectedMedia ? (
           <div className="mt-3 overflow-hidden rounded-2xl border border-slate-200 bg-slate-950">

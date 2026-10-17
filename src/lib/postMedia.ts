@@ -1,4 +1,6 @@
-export const POST_MEDIA_MAX_BYTES = 10 * 1024 * 1024
+export const POST_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+export const POST_VIDEO_MAX_BYTES = 100 * 1024 * 1024
+export const POST_MEDIA_MAX_BYTES = POST_VIDEO_MAX_BYTES
 
 const supportedPostMedia = {
   jpg: { type: 'image/jpeg', kind: 'image' },
@@ -22,8 +24,11 @@ export function postMediaFileType(file: File) {
 }
 
 export function validatePostMediaFile(file: File) {
-  if (file.size > POST_MEDIA_MAX_BYTES) return 'Images and videos must be 10 MB or smaller.'
-  if (!postMediaFileType(file)) return 'Choose a JPEG, PNG, or WebP image, or an MP4, WebM, or Ogg video.'
+  const mediaType = postMediaFileType(file)
+  if (!mediaType) return 'Choose a JPEG, PNG, or WebP image, or an MP4, WebM, or Ogg video.'
+  if (file.size > (mediaType.kind === 'video' ? POST_VIDEO_MAX_BYTES : POST_IMAGE_MAX_BYTES)) {
+    return mediaType.kind === 'video' ? 'Videos must be 100 MB or smaller.' : 'Images must be 10 MB or smaller.'
+  }
   return ''
 }
 

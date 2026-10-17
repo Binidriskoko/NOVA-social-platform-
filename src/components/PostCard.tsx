@@ -6,7 +6,7 @@ import { Button } from './ui/Button'
 import { PostMedia } from './PostMedia'
 import { useAuth } from '../context/AuthContext'
 import { apiRequest } from '../lib/api'
-import { sendPostToConversation, sharePostLink } from '../lib/postSharing'
+import { canonicalPostUrl, sendPostToConversation, sharePostLink } from '../lib/postSharing'
 import type { Post } from '../types'
 
 type CommentRecord = {
@@ -143,7 +143,7 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
     await publishComment(replyDraft, parentId)
   }
 
-  const postUrl = `${window.location.origin}/#post-${encodeURIComponent(post.id)}`
+  const postUrl = canonicalPostUrl(window.location.origin, post.id)
 
   const recordPostShare = async () => {
     const response = await apiRequest<{ shares: number }>(`/api/posts/${encodeURIComponent(post.id)}/share`, { method: 'POST' })
@@ -303,9 +303,6 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
         </Link>
         <div className="flex items-center gap-1">
           {!isOwnPost ? <button type="button" onClick={() => void toggleFollowAuthor()} disabled={busy} aria-label={authorFollowing ? `Unfollow ${post.author.name}` : `Follow ${post.author.name}`} className="rounded-xl px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">{authorFollowing ? 'Following' : 'Follow'}</button> : null}
-          <button type="button" onClick={() => void openShareOptions()} aria-label={`Share post (${shareCount} shares)`} title="Share post" className="rounded-full p-2 text-slate-500 hover:bg-slate-100">
-            <Share2 className="h-4 w-4" aria-hidden="true" />
-          </button>
           <button type="button" onClick={() => void (isOwnPost ? deletePost() : reportPost())} aria-label={isOwnPost ? 'Delete post' : 'Report post'} title={isOwnPost ? 'Delete post' : 'Report post'} className="rounded-full p-2 text-slate-500 hover:bg-slate-100">
             {isOwnPost ? <Trash2 className="h-4 w-4" aria-hidden="true" /> : <ShieldAlert className="h-4 w-4" aria-hidden="true" />}
           </button>
@@ -347,6 +344,9 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
         </Button>
         <Button variant="ghost" size="sm" className={`px-2 ${saved ? 'text-indigo-700' : 'text-slate-600'}`} onClick={() => void toggleSave()} disabled={busy} icon={<Bookmark className="h-4 w-4" aria-hidden="true" />}>
           {saveCount}
+        </Button>
+        <Button variant="ghost" size="sm" className="px-2 text-slate-600" onClick={() => void openShareOptions()} aria-label={`Share post (${shareCount} shares)`} icon={<Share2 className="h-4 w-4" aria-hidden="true" />}>
+          Share
         </Button>
         {isOwnPost ? <Button variant="ghost" size="sm" className="px-2 text-slate-600" onClick={() => setEditing((value) => !value)} icon={<PencilLine className="h-4 w-4" aria-hidden="true" />}>Edit</Button> : null}
       </div>

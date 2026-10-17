@@ -250,7 +250,7 @@ export function HomePage() {
               <h2 className="font-bold text-slate-900">Stories</h2>
               <p className="text-xs text-slate-500">Share a moment with your community</p>
             </div>
-            <p className="text-xs text-slate-500">Statuses expire after 24 hours</p>
+            <p className="text-xs text-slate-500">Stories expire after 24 hours</p>
           </div>
 
           <div className="flex gap-3 overflow-x-auto pb-1">

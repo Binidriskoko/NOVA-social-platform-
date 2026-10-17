@@ -1,12 +1,13 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { Link } from 'react-router-dom'
-import { Archive, ArrowLeft, CalendarDays, Camera, Check, CheckCheck, FileText, Image, Images, ListChecks, MapPin, Mic, MoreVertical, Paperclip, Phone, Pin, Search, SendHorizontal, Shield, Smile, Square, Star, UsersRound, UserPlus, Video, VolumeX, X } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { Archive, ArrowLeft, CalendarDays, Camera, Check, CheckCheck, FileText, Image, Images, ListChecks, MapPin, Mic, MoreVertical, Paperclip, Phone, Pin, Plus, Search, SendHorizontal, Shield, Smile, Square, Star, UsersRound, UserPlus, Video, VolumeX, X } from 'lucide-react'
 import { Avatar } from '../components/ui/Avatar'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { useAuth } from '../context/AuthContext'
 import { apiRequest, fetchMediaBlob, resolveMediaUrl, uploadMedia, uploadMessageAttachment } from '../lib/api'
 import { openAuthenticatedEventStream } from '../lib/eventStream'
+import { upsertMessageById } from '../lib/messageList'
 
 type ConversationParticipant = { userId: string; role?: string; user?: { id: string; name: string; avatar?: string } }
 type ConversationListItem = {
@@ -92,6 +93,7 @@ function MessageMediaAttachment({ message, isOwn }: { message: MessageItem; isOw
 
 export function MessagesPage() {
   const { user } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [conversations, setConversations] = useState<ConversationListItem[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [messages, setMessages] = useState<MessageItem[]>([])
@@ -121,6 +123,7 @@ export function MessagesPage() {
   const [groupName, setGroupName] = useState('')
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([])
   const [directory, setDirectory] = useState<DirectoryUser[]>([])
+  const [directoryLoading, setDirectoryLoading] = useState(false)
   const [directoryError, setDirectoryError] = useState('')
   const [hasMore, setHasMore] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
@@ -202,15 +205,24 @@ export function MessagesPage() {
   useEffect(() => { void loadConversations() }, [])
 
   useEffect(() => {
+    const conversationId = searchParams.get('conversationId')
+    if (!conversationId || !conversations.some((conversation) => conversation.id === conversationId)) return
+    setSelectedId(conversationId)
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.delete('conversationId')
+      return next
+    }, { replace: true })
+  }, [conversations, searchParams, setSearchParams])
+
+  useEffect(() => {
     const source = openAuthenticatedEventStream('/api/realtime')
     const onMessage = (event: MessageEvent<string>) => {
       try {
         const payload = JSON.parse(event.data) as { conversationId: string; message?: MessageItem; messageId?: string; reactions?: MessageReaction[]; deleted?: boolean }
         if (payload.conversationId === selectedId) {
           if (payload.message) {
-            setMessages((current) => current.some((message) => message.id === payload.message!.id)
-              ? current.map((message) => message.id === payload.message!.id ? payload.message! : message)
-              : [...current, payload.message!])
+            setMessages((current) => upsertMessageById(current, payload.message!))
           } else if (payload.messageId && payload.reactions) {
             setMessages((current) => current.map((message) => message.id === payload.messageId ? { ...message, reactions: payload.reactions } : message))
           }
@@ -259,11 +271,14 @@ export function MessagesPage() {
 
   const loadDirectory = async () => {
     setDirectoryError('')
+    setDirectoryLoading(true)
     try {
       const response = await apiRequest<{ users: DirectoryUser[] }>('/api/users')
       setDirectory(response.users.filter((directoryUser) => directoryUser.id !== user?.id))
     } catch (loadError) {
       setDirectoryError(loadError instanceof Error ? loadError.message : 'Unable to load users.')
+    } finally {
+      setDirectoryLoading(false)
     }
   }
 
@@ -517,7 +532,7 @@ export function MessagesPage() {
           ...(replyTarget ? { replyToId: replyTarget.id } : {}),
         }),
       })
-      setMessages((current) => current.some((message) => message.id === response.message.id) ? current : [...current, response.message])
+      setMessages((current) => upsertMessageById(current, response.message))
       setDraft('')
       setMediaUrl('')
       setMediaFile(null)
@@ -666,7 +681,7 @@ export function MessagesPage() {
       <header className="z-20 flex h-14 shrink-0 items-center justify-between border-b border-slate-100 bg-white px-4 sm:px-6">
         <div className="flex items-center gap-2"><div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#e8f5e9] text-sm font-black text-[#008f48]">N</div><p className="text-sm font-bold tracking-wide text-slate-900">NOVAKOKO</p></div>
         <div className="flex items-center gap-1">
-          <Link to="/updates?create=1" aria-label="Create a photo status" title="Camera status" className="rounded-full p-2 text-slate-700 hover:bg-slate-100"><Camera className="h-5 w-5" aria-hidden="true" /></Link>
+          <Link to="/updates" aria-label="Open Status and Updates" title="Status and updates" className="rounded-full p-2 text-slate-700 hover:bg-slate-100"><Camera className="h-5 w-5" aria-hidden="true" /></Link>
           <div className="relative">
             <button type="button" aria-label="More chat options" aria-expanded={showChatMenu} title="More options" onClick={() => setShowChatMenu((open) => !open)} className="rounded-full p-2 text-slate-700 hover:bg-slate-100"><MoreVertical className="h-5 w-5" aria-hidden="true" /></button>
             {showChatMenu ? <div className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-slate-200 bg-white p-1 shadow-xl"><button type="button" onClick={() => { setShowChatMenu(false); void openNewConversation() }} className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">New chat</button><button type="button" onClick={() => { setShowArchived((current) => !current); setShowChatMenu(false) }} className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">{showArchived ? 'Hide archived' : 'Archived chats'}</button><Link to="/communities" onClick={() => setShowChatMenu(false)} className="block rounded-lg px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">Communities</Link></div> : null}
@@ -838,7 +853,6 @@ export function MessagesPage() {
                         {message.forwardedFromId ? <p className={`mb-1 text-[10px] ${isOwn ? 'text-indigo-100' : 'text-slate-500'}`}>Forwarded</p> : null}
                         {reply ? <p className={`mb-2 border-l-2 pl-2 text-xs ${isOwn ? 'border-indigo-200 text-indigo-100' : 'border-indigo-400 text-slate-500'}`}>{reply.text}</p> : null}
                         {['IMAGE', 'VIDEO', 'VOICE', 'DOCUMENT'].includes(message.contentType ?? '') && message.mediaUrl ? <MessageMediaAttachment message={message} isOwn={isOwn} /> : null}
-                        {message.contentType === 'VOICE' && message.mediaUrl ? <audio controls crossOrigin={message.mediaUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} src={resolveMediaUrl(message.mediaUrl)} className="mb-2 max-w-full" /> : null}
                         {message.text ? <p className="whitespace-pre-wrap">{message.text}</p> : null}
                         {message.contentType === 'CONTACT' && message.metadata ? <p><strong>{String(message.metadata.name ?? 'Contact')}</strong><br /><a href={`tel:${encodeURIComponent(String(message.metadata.phone ?? ''))}`} className="underline">{String(message.metadata.phone ?? '')}</a></p> : null}
                         {message.contentType === 'LOCATION' && message.metadata ? <a href={`https://maps.google.com/?q=${encodeURIComponent(`${String(message.metadata.latitude)},${String(message.metadata.longitude)}`)}`} target="_blank" rel="noreferrer" className="underline">{String(message.metadata.label ?? 'Location')} · Open map</a> : null}
@@ -958,10 +972,11 @@ export function MessagesPage() {
               setShowAddMembers((open) => !open)
               setSelectedAddParticipants([])
               if (!directory.length) void loadDirectory()
-            }} className="rounded-xl bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100">{showAddMembers ? 'Cancel add' : 'Add member'}</button> : null}
+            }} aria-label={showAddMembers ? 'Cancel adding group members' : 'Add group members'} title={showAddMembers ? 'Cancel add' : 'Add member'} className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-indigo-50 text-indigo-700 hover:bg-indigo-100">{showAddMembers ? <X className="h-4 w-4" aria-hidden="true" /> : <Plus className="h-5 w-5" aria-hidden="true" />}</button> : null}
           </div>
           {showAddMembers && canManageActiveGroup ? <section aria-label="Add group members" className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
             {directoryError ? <p role="alert" className="text-xs text-rose-700">{directoryError}</p> : null}
+            {directoryLoading ? <p role="status" className="py-2 text-xs text-slate-500">Loading members…</p> : null}
             <div className="max-h-36 space-y-1 overflow-y-auto">
               {directory.filter((person) => !activeConversation.participants.some((participant) => participant.userId === person.id)).map((person) => <label key={person.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 hover:bg-white">
                 <input type="checkbox" checked={selectedAddParticipants.includes(person.id)} onChange={(event) => setSelectedAddParticipants((current) => event.target.checked ? [...current, person.id] : current.filter((id) => id !== person.id))} />
@@ -969,7 +984,7 @@ export function MessagesPage() {
               </label>)}
               {directory.filter((person) => !activeConversation.participants.some((participant) => participant.userId === person.id)).length === 0 ? <p className="py-2 text-xs text-slate-500">Everyone is already in this group.</p> : null}
             </div>
-            <div className="mt-2 flex justify-end"><Button variant="primary" size="sm" disabled={!selectedAddParticipants.length || groupActionBusy} onClick={() => void addGroupMembers()}>{groupActionBusy ? 'Adding…' : 'Add selected'}</Button></div>
+            <div className="mt-2 flex justify-end"><Button variant="primary" size="sm" disabled={!selectedAddParticipants.length || groupActionBusy || directoryLoading} onClick={() => void addGroupMembers()}>{groupActionBusy ? 'Adding…' : 'Add selected'}</Button></div>
           </section> : null}
 
           <ul className="mt-2 divide-y divide-slate-100">

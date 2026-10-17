@@ -278,6 +278,7 @@ model Post {
 model Story {
   id        String   @id @default(cuid())
   authorId  String
+  kind      String   @default("STORY")
   text      String?
   mediaUrl  String?
   createdAt DateTime @default(now())

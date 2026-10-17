@@ -1077,7 +1077,7 @@ messagesRouter.patch('/conversations/:id/participants/:userId', requireAuth, asy
   const isOwner = actor.role === 'OWNER' || isConversationOwner(conversation, req.user!.id);
   const canManageRoles = conversation.isChannel ? isOwner : canManageGroupMembers(conversation, actor, req.user!.id);
   if (!canManageRoles) return res.status(403).json({ message: conversation.isChannel ? 'Only channel owners can change member roles.' : 'Only group admins can change member roles.' });
-  if (target.role === 'OWNER') return res.status(409).json({ message: 'The owner role cannot be changed.' });
+  if (target.role === 'OWNER' || isConversationOwner(conversation, targetId)) return res.status(409).json({ message: 'The owner role cannot be changed.' });
   if (dbAvailable) return res.json({ participant: await prisma.conversationParticipant.update({ where: { conversationId_userId: { conversationId, userId: targetId } }, data: { role } }) });
   target.role = role;
   return res.json({ participant: target });
@@ -1094,10 +1094,13 @@ messagesRouter.delete('/conversations/:id/participants/:userId', requireAuth, as
   const target = dbAvailable
     ? await prisma.conversationParticipant.findFirst({ where: { conversationId, userId: targetId, leftAt: null } })
     : socialStore.state.conversationParticipants.find((entry) => entry.conversationId === conversationId && entry.userId === targetId);
-  if (!actor || !target) return res.status(404).json({ message: 'Conversation member not found.' });
+  const conversation = dbAvailable
+    ? await prisma.conversation.findUnique({ where: { id: conversationId }, select: { ownerId: true } })
+    : socialStore.state.conversations.find((entry) => entry.id === conversationId);
+  if (!actor || !target || !conversation) return res.status(404).json({ message: 'Conversation member not found.' });
   const selfLeave = targetId === userId;
   if (!selfLeave && actor.role !== 'OWNER' && actor.role !== 'MODERATOR') return res.status(403).json({ message: 'Only group admins can remove members.' });
-  if (target.role === 'OWNER') return res.status(409).json({ message: 'The owner cannot leave or be removed before transferring ownership.' });
+  if (target.role === 'OWNER' || isConversationOwner(conversation, targetId)) return res.status(409).json({ message: 'The owner cannot leave or be removed before transferring ownership.' });
   if (dbAvailable) await prisma.conversationParticipant.delete({ where: { conversationId_userId: { conversationId, userId: targetId } } });
   else socialStore.state.conversationParticipants.splice(socialStore.state.conversationParticipants.findIndex((participant) => participant.id === target.id), 1);
   return res.json({ removed: targetId });

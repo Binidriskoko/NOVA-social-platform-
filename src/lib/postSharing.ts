@@ -7,6 +7,10 @@ export type PostShareDetails = {
 export type PostShareResult = 'shared' | 'copied' | 'cancelled'
 export type ShareMessageApiRequest = <T>(path: string, options?: RequestInit) => Promise<T>
 
+export function canonicalPostUrl(origin: string, postId: string) {
+  return `${origin.replace(/\/$/, '')}/#post-${encodeURIComponent(postId)}`
+}
+
 export async function copyTextToClipboard(text: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text)

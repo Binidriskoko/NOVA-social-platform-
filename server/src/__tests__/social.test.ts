@@ -493,10 +493,33 @@ describe('social platform features', () => {
     expect(bobStory.status).toBe(201);
     expect(new Date(bobStory.body.story.expiresAt).getTime() - new Date(bobStory.body.story.createdAt).getTime()).toBe(24 * 60 * 60 * 1000);
 
+    const bobStatus = await request(app).post('/api/statuses').set('Cookie', getCookieHeader(bobLogin)).send({ text: 'A distinct text status' });
+    const caraStatus = await request(app).post('/api/statuses').set('Cookie', getCookieHeader(caraLogin)).send({ text: 'Only followers can see this status' });
+    const videoUpload = await request(app)
+      .post('/api/media/videos')
+      .set('Cookie', getCookieHeader(bobLogin))
+      .attach('file', Buffer.from([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109]), 'status.mp4');
+    const bobVideoStatus = await request(app).post('/api/statuses').set('Cookie', getCookieHeader(bobLogin))
+      .send({ text: 'A media status', mediaUrl: videoUpload.body.mediaUrl });
+    expect(bobStatus.status).toBe(201);
+    expect(bobStatus.body.status.mediaUrl).toBeNull();
+    expect(new Date(bobStatus.body.status.expiresAt).getTime() - new Date(bobStatus.body.status.createdAt).getTime()).toBe(24 * 60 * 60 * 1000);
+    expect(videoUpload.status).toBe(201);
+    expect(bobVideoStatus.status).toBe(201);
+    expect(bobVideoStatus.body.status.mediaUrl).toBe(videoUpload.body.mediaUrl);
+
     const aliceStories = await request(app).get('/api/stories').set('Cookie', getCookieHeader(aliceLogin));
     expect(aliceStories.body.stories.map((story: { id: string }) => story.id)).toContain(bobStory.body.story.id);
     expect(aliceStories.body.stories.map((story: { id: string }) => story.id)).not.toContain(caraStory.body.story.id);
+    expect(aliceStories.body.stories.map((story: { id: string }) => story.id)).not.toContain(bobStatus.body.status.id);
     expect((await request(app).post(`/api/stories/${caraStory.body.story.id}/view`).set('Cookie', getCookieHeader(aliceLogin))).status).toBe(404);
+
+    const aliceStatuses = await request(app).get('/api/statuses').set('Cookie', getCookieHeader(aliceLogin));
+    expect(aliceStatuses.body.statuses.map((status: { id: string }) => status.id)).toContain(bobStatus.body.status.id);
+    expect(aliceStatuses.body.statuses.map((status: { id: string }) => status.id)).toContain(bobVideoStatus.body.status.id);
+    expect(aliceStatuses.body.statuses.map((status: { id: string }) => status.id)).not.toContain(caraStatus.body.status.id);
+    expect((await request(app).post(`/api/statuses/${caraStatus.body.status.id}/view`).set('Cookie', getCookieHeader(aliceLogin))).status).toBe(404);
+    expect((await request(app).post(`/api/statuses/${bobVideoStatus.body.status.id}/view`).set('Cookie', getCookieHeader(aliceLogin))).body.viewCount).toBe(1);
 
     const firstView = await request(app).post(`/api/stories/${bobStory.body.story.id}/view`).set('Cookie', getCookieHeader(aliceLogin));
     const duplicateView = await request(app).post(`/api/stories/${bobStory.body.story.id}/view`).set('Cookie', getCookieHeader(aliceLogin));

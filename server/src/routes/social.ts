@@ -36,8 +36,13 @@ const createPostSchema = z.object({
 
 const createStorySchema = z.object({
   text: z.string().trim().max(500).optional(),
-  mediaUrl: z.string().trim().max(2000).refine(isSafeMediaUrl, 'Use an HTTPS image URL or an uploaded NOVAKOKO image.').optional(),
+  mediaUrl: z.string().trim().max(2000).refine((value) => value === '' || mediaKeyFromUrl(value) || isSafeMediaUrl(value) && !videoMediaKeyFromUrl(value), 'Use an HTTPS image URL or an uploaded NOVAKOKO image.').optional(),
 }).refine((payload) => Boolean(payload.text || payload.mediaUrl), { message: 'A story needs text or media.' });
+
+const createStatusSchema = z.object({
+  text: z.string().trim().max(500).optional(),
+  mediaUrl: z.string().trim().max(2000).refine((value) => value === '' || mediaKeyFromUrl(value) || videoMediaKeyFromUrl(value), 'Choose an uploaded NOVAKOKO image or video.').optional(),
+}).refine((payload) => Boolean(payload.text || payload.mediaUrl), { message: 'A status needs text or media.' });
 
 const updatePostSchema = z.object({
   content: z.string().trim().min(1).max(2500).optional(),
@@ -370,7 +375,7 @@ async function requireAccountAccess(req: any, res: any, next: any) {
 
 socialRouter.use(requireActiveAccountIfAuthenticated);
 
-socialRouter.get('/stories', requireAuth, async (req, res) => {
+async function listTimedUpdates(req: any, res: Response, kind: 'STORY' | 'STATUS', responseKey: 'stories' | 'statuses') {
   const userId = req.user!.id;
   const dbAvailable = await isDatabaseAvailable();
   const followedIds = dbAvailable
@@ -380,7 +385,7 @@ socialRouter.get('/stories', requireAuth, async (req, res) => {
   const now = new Date();
   const records = dbAvailable
     ? await prisma.story.findMany({
-        where: { authorId: { in: authorIds }, expiresAt: { gt: now } },
+        where: { authorId: { in: authorIds }, kind, expiresAt: { gt: now } },
         include: {
           author: { select: { id: true, name: true, email: true, profile: { select: { displayName: true, username: true, avatarUrl: true } } } },
           views: { where: { viewerId: userId }, select: { id: true } },
@@ -389,7 +394,7 @@ socialRouter.get('/stories', requireAuth, async (req, res) => {
         orderBy: { createdAt: 'asc' },
         take: 100,
       })
-    : socialStore.state.stories.filter((story) => authorIds.includes(story.authorId) && new Date(story.expiresAt).getTime() > now.getTime())
+    : socialStore.state.stories.filter((story) => (story.kind ?? 'STORY') === kind && authorIds.includes(story.authorId) && new Date(story.expiresAt).getTime() > now.getTime())
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt)).slice(-100);
 
   const stories = [];
@@ -414,29 +419,32 @@ socialRouter.get('/stories', requireAuth, async (req, res) => {
     });
   }
 
-  return res.json({ stories });
-});
+  return res.json({ [responseKey]: stories });
+}
 
-socialRouter.post('/stories', requireAuth, requireAccountAccess, async (req, res) => {
-  const payload = createStorySchema.parse(req.body ?? {});
+async function createTimedUpdate(req: any, res: Response, kind: 'STORY' | 'STATUS', responseKey: 'story' | 'status') {
+  const payload = kind === 'STORY' ? createStorySchema.parse(req.body ?? {}) : createStatusSchema.parse(req.body ?? {});
   const userId = req.user!.id;
-  if (payload.mediaUrl && !(await uploadedMediaBelongsTo(payload.mediaUrl, userId, process.env.NODE_ENV ?? 'development'))) {
-    return res.status(403).json({ message: 'You can only publish images that you uploaded.' });
+  if (payload.mediaUrl) {
+    const ownsMedia = videoMediaKeyFromUrl(payload.mediaUrl)
+      ? await uploadedVideoBelongsTo(payload.mediaUrl, userId, process.env.NODE_ENV ?? 'development')
+      : await uploadedMediaBelongsTo(payload.mediaUrl, userId, process.env.NODE_ENV ?? 'development');
+    if (!ownsMedia) return res.status(403).json({ message: 'You can only publish media that you uploaded.' });
   }
   const text = payload.text?.trim() || null;
   const moderation = reviewContentForSafety({ type: 'post', text: text ?? '', userId });
-  if (moderation === 'REMOVE') return res.status(400).json({ message: 'This story violates NOVA Community & Safety Rules.' });
-  if (moderation === 'REVIEW') return res.status(422).json({ message: 'This story requires moderator review before publication.' });
+  if (moderation === 'REMOVE') return res.status(400).json({ message: `This ${kind.toLowerCase()} violates NOVA Community & Safety Rules.` });
+  if (moderation === 'REVIEW') return res.status(422).json({ message: `This ${kind.toLowerCase()} requires moderator review before publication.` });
 
   const now = new Date();
-  const data = { authorId: userId, text, mediaUrl: payload.mediaUrl ?? null, expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000) };
+  const data = { authorId: userId, kind, text, mediaUrl: payload.mediaUrl ?? null, expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000) };
   const dbAvailable = await isDatabaseAvailable();
   const story = dbAvailable
     ? await prisma.story.create({ data })
     : { id: `story_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, ...data, createdAt: now };
   if (!dbAvailable) socialStore.state.stories.push({ ...story, createdAt: story.createdAt.toISOString(), expiresAt: story.expiresAt.toISOString() });
   const author = await getUserById(userId);
-  return res.status(201).json({ story: {
+  return res.status(201).json({ [responseKey]: {
     ...story,
     createdAt: story.createdAt.toISOString(),
     expiresAt: story.expiresAt.toISOString(),
@@ -444,15 +452,20 @@ socialRouter.post('/stories', requireAuth, requireAccountAccess, async (req, res
     viewedByMe: true,
     author: author ? await getUserSummary(author) : null,
   } });
-});
+}
 
-socialRouter.post('/stories/:id/view', requireAuth, async (req, res) => {
+socialRouter.get('/stories', requireAuth, (req, res) => listTimedUpdates(req, res, 'STORY', 'stories'));
+socialRouter.get('/statuses', requireAuth, (req, res) => listTimedUpdates(req, res, 'STATUS', 'statuses'));
+socialRouter.post('/stories', requireAuth, requireAccountAccess, (req, res) => createTimedUpdate(req, res, 'STORY', 'story'));
+socialRouter.post('/statuses', requireAuth, requireAccountAccess, (req, res) => createTimedUpdate(req, res, 'STATUS', 'status'));
+
+async function viewTimedUpdate(req: any, res: Response, kind: 'STORY' | 'STATUS') {
   const userId = req.user!.id;
   const storyId = String(req.params.id);
   const dbAvailable = await isDatabaseAvailable();
   const story = dbAvailable
-    ? await prisma.story.findFirst({ where: { id: storyId, expiresAt: { gt: new Date() } }, select: { id: true, authorId: true } })
-    : socialStore.state.stories.find((entry) => entry.id === storyId && new Date(entry.expiresAt).getTime() > Date.now());
+    ? await prisma.story.findFirst({ where: { id: storyId, kind, expiresAt: { gt: new Date() } }, select: { id: true, authorId: true } })
+    : socialStore.state.stories.find((entry) => entry.id === storyId && (entry.kind ?? 'STORY') === kind && new Date(entry.expiresAt).getTime() > Date.now());
   if (!story) return res.status(404).json({ message: 'Story not found.' });
   if (story.authorId !== userId) {
     const [following, blockStatus] = await Promise.all([isFollowing(userId, story.authorId), getBlockStatus(userId, story.authorId)]);
@@ -475,21 +488,26 @@ socialRouter.post('/stories/:id/view', requireAuth, async (req, res) => {
   }
   const viewCount = socialStore.state.storyViews.filter((view) => view.storyId === storyId).length;
   return res.json({ viewed: true, viewCount });
-});
+}
 
-socialRouter.delete('/stories/:id', requireAuth, requireAccountAccess, async (req, res) => {
+async function deleteTimedUpdate(req: any, res: Response, kind: 'STORY' | 'STATUS') {
   const storyId = String(req.params.id);
   if (await isDatabaseAvailable()) {
-    const deleted = await prisma.story.deleteMany({ where: { id: storyId, authorId: req.user!.id } });
+    const deleted = await prisma.story.deleteMany({ where: { id: storyId, authorId: req.user!.id, kind } });
     if (!deleted.count) return res.status(404).json({ message: 'Story not found.' });
   } else {
-    const index = socialStore.state.stories.findIndex((story) => story.id === storyId && story.authorId === req.user!.id);
+    const index = socialStore.state.stories.findIndex((story) => story.id === storyId && story.authorId === req.user!.id && (story.kind ?? 'STORY') === kind);
     if (index < 0) return res.status(404).json({ message: 'Story not found.' });
     socialStore.state.stories.splice(index, 1);
     socialStore.state.storyViews = socialStore.state.storyViews.filter((view) => view.storyId !== storyId);
   }
   return res.json({ deleted: true });
-});
+}
+
+socialRouter.post('/stories/:id/view', requireAuth, (req, res) => viewTimedUpdate(req, res, 'STORY'));
+socialRouter.post('/statuses/:id/view', requireAuth, (req, res) => viewTimedUpdate(req, res, 'STATUS'));
+socialRouter.delete('/stories/:id', requireAuth, requireAccountAccess, (req, res) => deleteTimedUpdate(req, res, 'STORY'));
+socialRouter.delete('/statuses/:id', requireAuth, requireAccountAccess, (req, res) => deleteTimedUpdate(req, res, 'STATUS'));
 
 socialRouter.get('/users', async (req, res) => {
   const dbAvailable = await isDatabaseAvailable();

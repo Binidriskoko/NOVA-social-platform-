@@ -114,16 +114,20 @@ describe('messaging database responses', () => {
     expect((await request(app).patch(rolePath).set(authFor('creator')).send({ role: 'MODERATOR' })).status).toBe(200);
     expect((await request(app).patch(rolePath).set(authFor('admin')).send({ role: 'MODERATOR' })).status).toBe(200);
     expect((await request(app).patch(rolePath).set(authFor('storedOwner')).send({ role: 'MODERATOR' })).status).toBe(200);
+    expect((await request(app).patch('/api/conversations/database-group/participants/admin').set(authFor('creator')).send({ role: 'MEMBER' })).status).toBe(200);
+    expect((await request(app).patch('/api/conversations/database-group/participants/storedOwner').set(authFor('creator')).send({ role: 'MODERATOR' })).status).toBe(409);
     expect((await request(app).patch(rolePath).set(authFor('member')).send({ role: 'MEMBER' })).status).toBe(403);
     expect((await request(app).patch('/api/conversations/database-group/participants/member').set(authFor('member')).send({ role: 'MODERATOR' })).status).toBe(403);
     expect((await request(app).patch('/api/conversations/database-group/participants/newcomer').set(authFor('former-admin')).send({ role: 'MODERATOR' })).status).toBe(404);
+    expect((await request(app).delete('/api/conversations/database-group/participants/storedOwner').set(authFor('creator'))).status).toBe(409);
+    expect((await request(app).delete('/api/conversations/database-group/participants/admin').set(authFor('member'))).status).toBe(403);
     expect((await request(app).post(participantsPath).set(authFor('former-admin')).send({ participantIds: ['newcomer'] })).status).toBe(404);
     expect(prisma.conversationParticipant.findFirst).toHaveBeenCalledWith({
       where: { conversationId: 'database-group', userId: 'former-admin', leftAt: null },
       select: { role: true },
     });
     expect(prisma.conversationParticipant.createMany).toHaveBeenCalledTimes(3);
-    expect(prisma.conversationParticipant.update).toHaveBeenCalledTimes(3);
+    expect(prisma.conversationParticipant.update).toHaveBeenCalledTimes(4);
 
     conversationLookup.mockResolvedValue({ id: 'database-group', ownerId: 'storedOwner', isGroup: true, isChannel: true } as never);
     expect((await request(app).post(participantsPath).set(authFor('admin')).send({ participantIds: ['newcomer'] })).status).toBe(403);
@@ -189,10 +193,16 @@ describe('messaging database responses', () => {
 
     const participantsPath = `/api/conversations/${conversationId}/participants`;
     expect((await request(app).post(participantsPath).set(tokens.fallbackOwner).send({ participantIds: ['fallbackNew'] })).status).toBe(201);
+    expect((await request(app).post(participantsPath).set(tokens.fallbackOwner).send({ participantIds: ['fallbackNew'] })).body.added).toEqual([]);
+    expect(socialStore.state.conversationParticipants.filter((entry) => entry.conversationId === conversationId && entry.userId === 'fallbackNew' && !entry.leftAt)).toHaveLength(1);
     expect((await request(app).patch(`${participantsPath}/fallbackMember`).set(tokens.fallbackMember).send({ role: 'MODERATOR' })).status).toBe(403);
     expect((await request(app).post(participantsPath).set(tokens.fallbackFormer).send({ participantIds: ['fallbackNew'] })).status).toBe(404);
     expect((await request(app).patch(`${participantsPath}/fallbackMember`).set(tokens.fallbackFormer).send({ role: 'MODERATOR' })).status).toBe(404);
     expect((await request(app).patch(`${participantsPath}/fallbackMember`).set(tokens.fallbackOwner).send({ role: 'MODERATOR' })).status).toBe(200);
+    expect((await request(app).patch(`${participantsPath}/fallbackAdmin`).set(tokens.fallbackOwner).send({ role: 'MEMBER' })).status).toBe(200);
+    expect((await request(app).patch(`${participantsPath}/fallbackOwner`).set(tokens.fallbackOwner).send({ role: 'MODERATOR' })).status).toBe(409);
+    expect((await request(app).delete(`${participantsPath}/fallbackOwner`).set(tokens.fallbackOwner)).status).toBe(409);
+    expect((await request(app).delete(`${participantsPath}/fallbackAdmin`).set(tokens.fallbackNew)).status).toBe(403);
 
     const conversation = socialStore.state.conversations.find((entry) => entry.id === conversationId)!;
     conversation.isChannel = true;

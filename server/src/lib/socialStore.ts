@@ -26,6 +26,7 @@ export type SocialPostRecord = {
 export type StoryRecord = {
   id: string;
   authorId: string;
+  kind?: string;
   text: string | null;
   mediaUrl: string | null;
   createdAt: string;

@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { callScreenState, formatCallDuration } from '../src/lib/callPresentation'
+import { callScreenState, callViewportClassName, formatCallDuration } from '../src/lib/callPresentation'
 import { cameraSwitchErrorMessage, chooseNextCamera, switchToNextCamera } from '../src/lib/cameraSwitching'
 import { sendPostToConversation } from '../src/lib/postSharing'
 import { isVideoStoryMedia, sendStoryReply } from '../src/lib/storyReplies'
+import { upsertMessageById } from '../src/lib/messageList'
 
 describe('group video camera switching', () => {
   const devices = [
@@ -46,6 +47,28 @@ describe('call screen state', () => {
   it('formats a connected duration as mm:ss or h:mm:ss', () => {
     expect(formatCallDuration(65_000)).toBe('01:05')
     expect(formatCallDuration(3_661_000)).toBe('1:01:01')
+  })
+
+  it('uses a responsive safe-area call viewport with dynamic device height', () => {
+    expect(callViewportClassName).toContain('h-[100dvh]')
+    expect(callViewportClassName).toContain('w-auto')
+    expect(callViewportClassName).toContain('max-w-full')
+    expect(callViewportClassName).toContain('safe-area-inset-left')
+    expect(callViewportClassName).toContain('safe-area-inset-right')
+    expect(callViewportClassName).toContain('safe-area-inset-top')
+    expect(callViewportClassName).toContain('safe-area-inset-bottom')
+  })
+})
+
+describe('message list reconciliation', () => {
+  it('keeps a sent voice message visible once when both the response and socket event arrive', () => {
+    const initial = [{ id: 'text-1', contentType: 'TEXT' }]
+    const sentVoiceMessage = { id: 'voice-1', contentType: 'VOICE' }
+    const afterApiResponse = upsertMessageById(initial, sentVoiceMessage)
+    const afterSocketEvent = upsertMessageById(afterApiResponse, sentVoiceMessage)
+
+    expect(afterSocketEvent.filter((message) => message.id === 'voice-1')).toHaveLength(1)
+    expect(afterSocketEvent).toHaveLength(2)
   })
 })
 

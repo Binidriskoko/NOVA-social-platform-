@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sidebarItems } from '../src/components/AppShell'
 import { uploadVideo } from '../src/lib/api'
 import { isVideoPostMediaUrl, postMediaFileType, validatePostMediaFile } from '../src/lib/postMedia'
-import { sharePostLink } from '../src/lib/postSharing'
+import { canonicalPostUrl, sharePostLink } from '../src/lib/postSharing'
 
 describe('post media selection and video navigation', () => {
   afterEach(() => {
@@ -71,6 +71,10 @@ describe('post sharing', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+  })
+
+  it('builds the canonical hash route using the actual encoded post id', () => {
+    expect(canonicalPostUrl('https://nova.test/', 'post/a b')).toBe('https://nova.test/#post-post%2Fa%20b')
   })
 
   it('uses native sharing when available', async () => {

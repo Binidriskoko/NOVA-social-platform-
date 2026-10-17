@@ -7,7 +7,7 @@ import { Button } from '../components/ui/Button'
 import { useAuth } from '../context/AuthContext'
 import { apiRequest, resolveMediaUrl } from '../lib/api'
 import { openAuthenticatedEventStream } from '../lib/eventStream'
-import { callScreenState, formatCallDuration } from '../lib/callPresentation'
+import { callScreenState, callViewportClassName, formatCallDuration } from '../lib/callPresentation'
 import { cameraSwitchErrorMessage, switchToNextCamera } from '../lib/cameraSwitching'
 
 type CallParticipant = { userId: string; status: string; muted: boolean; cameraOn: boolean; speakerOn: boolean }
@@ -545,10 +545,10 @@ export function CallsPage() {
       <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900" role="status">Calls use LiveKit for encrypted, low-latency voice and video. Your administrator must configure the LiveKit media server.</div>
       {error ? <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</p> : null}
 
-      {incomingCall && !activeCall ? <section aria-label="Incoming call" role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-5 bg-gradient-to-b from-indigo-950 via-slate-950 to-black p-6 text-white">
-        <Link to="/messages" className="absolute left-4 top-4 inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm text-white/80 hover:bg-white/10"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Messages</Link>
+      {incomingCall && !activeCall ? <section aria-label="Incoming call" role="dialog" aria-modal="true" className={`${callViewportClassName} items-center justify-center gap-5`}>
+        <Link to="/messages" className="absolute left-[max(1rem,env(safe-area-inset-left))] top-[max(1rem,env(safe-area-inset-top))] inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm text-white/80 hover:bg-white/10"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Messages</Link>
         <Avatar src={callAvatar(incomingCall)} alt={callTitle(incomingCall)} size="xl" />
-        <div className="text-center"><h2 className="text-2xl font-semibold">{callTitle(incomingCall)}</h2><p className="mt-2 text-sm text-white/75">Incoming {incomingCall.type} call</p><p className="mt-1 text-sm text-emerald-200">Ringing</p></div>
+        <div className="max-w-full text-center"><h2 className="break-words text-2xl font-semibold">{callTitle(incomingCall)}</h2><p className="mt-2 text-sm text-white/75">Incoming {incomingCall.type} call</p><p className="mt-1 text-sm text-emerald-200">Ringing</p></div>
         {error ? <p role="alert" className="max-w-md rounded-xl bg-rose-950/70 px-4 py-2 text-center text-sm text-rose-100">{error}</p> : null}
         <div className="mt-8 flex items-center gap-8">
           <button type="button" onClick={() => void callAction(incomingCall, 'reject')} disabled={busyId === incomingCall.id} className="flex h-16 w-16 items-center justify-center rounded-full bg-rose-600 text-white shadow-lg hover:bg-rose-700 disabled:opacity-50" aria-label="Reject call"><PhoneOff className="h-7 w-7" aria-hidden="true" /></button>
@@ -557,14 +557,14 @@ export function CallsPage() {
         {busyId === incomingCall.id ? <p className="text-sm text-white/75">Connecting securely…</p> : null}
       </section> : null}
 
-      {activeCall && screenState ? <section aria-label={`${activeCall.type} call`} role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex min-h-[100dvh] flex-col overflow-y-auto bg-gradient-to-b from-indigo-950 via-slate-950 to-black px-5 pt-[env(safe-area-inset-top,1rem)] pb-[env(safe-area-inset-bottom,1rem)] text-white">
+      {activeCall && screenState ? <section aria-label={`${activeCall.type} call`} role="dialog" aria-modal="true" className={callViewportClassName}>
         <header className="flex items-center justify-between gap-3">
           <Link to="/messages" className="inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm text-white/80 hover:bg-white/10"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Messages</Link>
           <p className="text-xs font-semibold uppercase tracking-wide text-indigo-200">{activeCall.type === 'video' ? 'NOVAKOKO video call' : 'NOVAKOKO voice call'}</p>
         </header>
-        <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col items-center justify-center py-6">
+        <div className="mx-auto flex w-full min-w-0 max-w-4xl flex-1 flex-col items-center justify-center py-6">
           <Avatar src={callAvatar(activeCall)} alt={callTitle(activeCall)} size="xl" />
-          <h2 className="mt-5 text-center text-2xl font-semibold sm:text-3xl">{callTitle(activeCall)}</h2>
+          <h2 className="mt-5 max-w-full break-words text-center text-2xl font-semibold sm:text-3xl">{callTitle(activeCall)}</h2>
           <p className="mt-2 text-center text-sm text-white/75">
             {screenState === 'incoming' ? 'Incoming call'
               : screenState === 'outgoing' ? 'Ringing — waiting for an answer'
@@ -574,14 +574,14 @@ export function CallsPage() {
                       : activeCall.status === 'rejected' ? 'Call declined' : 'Call ended'}
           </p>
           {screenState === 'failed' && callFailure ? <p role="alert" className="mt-3 max-w-md rounded-xl bg-rose-950/70 px-4 py-2 text-center text-sm text-rose-100">{callFailure}</p> : null}
-          {screenState === 'active' && activeCall.type === 'video' ? <div className="mt-6 grid w-full gap-3 sm:grid-cols-2">
-            {remoteMedia.filter((entry) => entry.track.kind === Track.Kind.Video).map((entry) => <div key={entry.key} className="overflow-hidden rounded-2xl border border-white/15 bg-black"><p className="px-3 py-2 text-xs text-white/70">{nameFor(entry.userId)}</p><AttachedTrack track={entry.track} className="aspect-video w-full object-cover" /></div>)}
-            {localVideoTrack && cameraOn ? <div className="overflow-hidden rounded-2xl border border-white/15 bg-black"><p className="px-3 py-2 text-xs text-white/70">You</p><AttachedTrack track={localVideoTrack} muted className="aspect-video w-full object-cover" /></div> : null}
+          {screenState === 'active' && activeCall.type === 'video' ? <div className="mt-6 grid w-full min-w-0 gap-3 sm:grid-cols-2">
+            {remoteMedia.filter((entry) => entry.track.kind === Track.Kind.Video).map((entry) => <div key={entry.key} className="min-w-0 overflow-hidden rounded-2xl border border-white/15 bg-black"><p className="truncate px-3 py-2 text-xs text-white/70">{nameFor(entry.userId)}</p><AttachedTrack track={entry.track} className="aspect-video w-full object-cover" /></div>)}
+            {localVideoTrack && cameraOn ? <div className="min-w-0 overflow-hidden rounded-2xl border border-white/15 bg-black"><p className="px-3 py-2 text-xs text-white/70">You</p><AttachedTrack track={localVideoTrack} muted className="aspect-video w-full object-cover" /></div> : null}
           </div> : null}
           {remoteMedia.filter((entry) => entry.track.kind === Track.Kind.Audio).map((entry) => <AttachedTrack key={entry.key} track={entry.track} className="hidden" />)}
           {needsAudioPlayback || needsVideoPlayback ? <Button variant="secondary" size="sm" className="mt-5" onClick={() => void enablePlayback()}>Enable media playback</Button> : null}
         </div>
-        <footer className="mx-auto flex w-full max-w-lg flex-wrap items-center justify-center gap-3 pb-5">
+        <footer className="mx-auto flex w-full max-w-lg flex-wrap items-center justify-center gap-2 pb-2 sm:gap-3">
           {screenState !== 'ended' && screenState !== 'failed' ? <>
             <button type="button" onClick={() => void toggleMute()} disabled={!activeRoom} className={`flex min-h-16 min-w-16 flex-col items-center justify-center gap-1 rounded-full ${muted ? 'bg-white text-slate-900' : 'bg-white/15 text-white'} disabled:opacity-40`} aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}><span className="flex h-6 items-center">{muted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}</span><span className="text-[10px]">{muted ? 'Unmute' : 'Mute'}</span></button>
             {activeCall.type === 'video' ? <button type="button" onClick={() => void toggleCamera()} disabled={!activeRoom} className={`flex min-h-16 min-w-16 flex-col items-center justify-center gap-1 rounded-full ${cameraOn ? 'bg-white/15 text-white' : 'bg-white text-slate-900'} disabled:opacity-40`} aria-label={cameraOn ? 'Turn camera off' : 'Turn camera on'}><span className="flex h-6 items-center">{cameraOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}</span><span className="text-[10px]">{cameraOn ? 'Camera off' : 'Camera on'}</span></button> : null}

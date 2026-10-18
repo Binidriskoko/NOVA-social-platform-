@@ -330,7 +330,7 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
       ) : (
         <>
           {content ? <p className="mt-4 whitespace-pre-wrap text-[15px] leading-7 text-slate-700">{content}</p> : null}
-          {imageUrl ? <PostMedia url={imageUrl} alt="Post attachment" className="mt-4 max-h-[32rem] w-full rounded-[24px] object-cover" /> : null}
+          {imageUrl ? <PostMedia url={imageUrl} postId={post.id} measurementSource="feed" alt="Post attachment" className="mt-4 max-h-[32rem] w-full rounded-[24px] object-cover" /> : null}
           <p className="mt-2 text-xs text-slate-500">{visibility === 'PUBLIC' ? 'Everyone' : visibility === 'FOLLOWERS' ? 'Followers' : 'Only me'}</p>
         </>
       )}

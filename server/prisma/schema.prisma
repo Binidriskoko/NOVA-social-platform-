@@ -160,6 +160,7 @@ model User {
   creatorProfile           CreatorProfile?
   creatorApplications      CreatorApplication[]       @relation("CreatorApplicant")
   reviewedCreatorApplications CreatorApplication[]    @relation("CreatorApplicationReviewer")
+  videoMeasurements        VideoMeasurement[]
   adCampaigns              AdCampaign[]                @relation("AdCampaignAdvertiser")
   reviewedAdCampaigns      AdCampaign[]                @relation("AdCampaignReviewer")
   adEvents                 AdEvent[]
@@ -272,6 +273,7 @@ model Post {
   community Community?  @relation(fields: [communityId], references: [id], onDelete: SetNull)
   comments  Comment[]
   reactions Reaction[]
+  videoMeasurements VideoMeasurement[]
   reports   Report[]
   saves     PostSave[]
   shares    PostShare[]
@@ -279,6 +281,31 @@ model Post {
   @@index([authorId])
   @@index([communityId])
   @@index([createdAt])
+}
+
+model VideoMeasurement {
+  id             String   @id @default(cuid())
+  postId         String
+  viewerId       String
+  sessionId      String
+  source         String   @default("unknown")
+  watchSeconds   Int
+  durationSeconds Int
+  lastPositionSeconds Int @default(0)
+  lastHeartbeatAt DateTime?
+  active         Boolean  @default(true)
+  startedAt      DateTime
+  endedAt        DateTime
+  qualified      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  post  Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  viewer User @relation(fields: [viewerId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, viewerId, sessionId])
+  @@index([postId, createdAt])
+  @@index([viewerId, createdAt])
+  @@index([qualified, createdAt])
 }
 
 model Story {

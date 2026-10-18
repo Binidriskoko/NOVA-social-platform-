@@ -22,6 +22,142 @@ async function register(name: string) {
 describe('creator monetization and internal advertising', () => {
   beforeEach(() => { fallbackStore.clear(); socialStore.clear(); commerceStore.clear(); });
 
+  it('records qualified watch-time only when the configured threshold is met and rejects duplicate submissions', async () => {
+    const creator = await register('MeasuredCreator');
+    const viewer = await register('MeasuredViewer');
+    const admin = await register('MeasuredAdmin');
+    fallbackStore.updateUser(admin.user.id, { role: 'ADMIN' });
+
+    const post = await request(app).post('/api/posts').set('Cookie', creator.auth).send({ content: 'Great video', imageUrl: 'https://cdn.example.test/video.mp4', visibility: 'PUBLIC' });
+    expect(post.status).toBe(201);
+
+    await request(app).patch('/api/admin/monetization/settings').set('Cookie', admin.auth).send({ minimumQualifiedViews: 1, qualifiedViewWindowDays: 30, minimumWatchTimeSeconds: 1, minimumFollowers: 0, minimumEngagementRate: 0, minimumAccountAgeDays: 0, minimumPublicPosts: 0 });
+
+    const first = await request(app).post('/api/monetization/video-views/start').set('Cookie', viewer.auth).send({
+      postId: post.body.post.id,
+      sessionId: 'session-qualified-1',
+      durationSeconds: 90,
+      source: 'feed',
+    });
+    expect(first.status).toBe(201);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const heartbeat = await request(app).post('/api/monetization/video-views/heartbeat').set('Cookie', viewer.auth).send({ postId: post.body.post.id, sessionId: 'session-qualified-1', currentTimeSeconds: 2 });
+    expect(heartbeat.status).toBe(200);
+    expect(heartbeat.body.creditedSeconds).toBeGreaterThanOrEqual(1);
+    const finished = await request(app).post('/api/monetization/video-views/finish').set('Cookie', viewer.auth).send({ postId: post.body.post.id, sessionId: 'session-qualified-1' });
+    expect(finished.body.qualified).toBe(true);
+    expect((await request(app).get('/api/creators/me/monetization').set('Cookie', creator.auth)).body.metrics.qualifiedViews).toBe(1);
+    expect((await request(app).get('/api/creators/me/monetization').set('Cookie', creator.auth)).body.metrics.watchTimeSeconds).toBeGreaterThanOrEqual(1);
+
+    const duplicate = await request(app).post('/api/monetization/video-views/start').set('Cookie', viewer.auth).send({ postId: post.body.post.id, sessionId: 'session-qualified-1', durationSeconds: 90, source: 'feed' });
+    expect(duplicate.status).toBe(409);
+
+    await request(app).post('/api/monetization/video-views/start').set('Cookie', viewer.auth).send({ postId: post.body.post.id, sessionId: 'session-paused-1', durationSeconds: 90, source: 'feed' });
+    const paused = await request(app).post('/api/monetization/video-views/finish').set('Cookie', viewer.auth).send({ postId: post.body.post.id, sessionId: 'session-paused-1' });
+    expect(paused.status).toBe(200);
+    expect(paused.body.qualified).toBe(false);
+  });
+
+  it('blocks unauthorized, impossible, private, and expired playback submissions', async () => {
+    const creator = await register('RestrictedCreator');
+    const viewer = await register('RestrictedViewer');
+    const privateViewer = await register('PrivateViewer');
+    const admin = await register('RestrictedAdmin');
+    fallbackStore.updateUser(admin.user.id, { role: 'ADMIN' });
+
+    const privatePost = await request(app).post('/api/posts').set('Cookie', creator.auth).send({ content: 'Private clip', imageUrl: 'https://cdn.example.test/private.mp4', visibility: 'FOLLOWERS' });
+    expect(privatePost.status).toBe(201);
+
+    const invalid = await request(app).post('/api/monetization/video-views/start').set('Cookie', viewer.auth).send({
+      postId: privatePost.body.post.id,
+      sessionId: 'session-invalid-1',
+      durationSeconds: 0,
+    });
+    expect(invalid.status).toBe(400);
+
+    const unauthorized = await request(app).post('/api/monetization/video-views/start').set('Cookie', privateViewer.auth).send({
+      postId: privatePost.body.post.id,
+      sessionId: 'session-unauthorized-1',
+      durationSeconds: 90,
+      source: 'feed',
+    });
+    expect(unauthorized.status).toBe(403);
+
+    const publicPost = await request(app).post('/api/posts').set('Cookie', creator.auth).send({ content: 'Public clip', imageUrl: 'https://cdn.example.test/public.mp4', visibility: 'PUBLIC' });
+    const forged = await request(app).post('/api/monetization/video-views/heartbeat').set('Cookie', viewer.auth).send({
+      postId: publicPost.body.post.id,
+      sessionId: 'session-forged-1',
+      currentTimeSeconds: 20,
+    });
+    expect(forged.status).toBe(409);
+  });
+
+  it('uses the rolling qualified-view window and creator eligibility thresholds from validated records only', async () => {
+    const creator = await register('WindowCreator');
+    const viewer = await register('WindowViewer');
+    const admin = await register('WindowAdmin');
+    fallbackStore.updateUser(admin.user.id, { role: 'ADMIN' });
+
+    const post = await request(app).post('/api/posts').set('Cookie', creator.auth).send({ content: 'Windowed clip', imageUrl: 'https://cdn.example.test/window.mp4', visibility: 'PUBLIC' });
+    expect(post.status).toBe(201);
+
+    await request(app).patch('/api/admin/monetization/settings').set('Cookie', admin.auth).send({
+      minimumQualifiedViews: 1,
+      qualifiedViewWindowDays: 7,
+      minimumWatchTimeSeconds: 10,
+      minimumFollowers: 0,
+      minimumEngagementRate: 0,
+      minimumAccountAgeDays: 0,
+      minimumPublicPosts: 0,
+    });
+
+    socialStore.state.videoMeasurements.push({
+      id: 'window-current',
+      postId: post.body.post.id,
+      viewerId: viewer.user.id,
+      sessionId: 'window-current',
+      source: 'videos',
+      watchSeconds: 25,
+      durationSeconds: 120,
+      lastPositionSeconds: 25,
+      lastHeartbeatAt: new Date().toISOString(),
+      active: false,
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      qualified: true,
+      createdAt: new Date().toISOString(),
+    }, {
+      id: 'window-old',
+      postId: post.body.post.id,
+      viewerId: viewer.user.id,
+      sessionId: 'window-old',
+      source: 'videos',
+      watchSeconds: 25,
+      durationSeconds: 120,
+      lastPositionSeconds: 25,
+      lastHeartbeatAt: null,
+      active: false,
+      startedAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000).toISOString(),
+      endedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+      qualified: true,
+      createdAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    const eligibility = await request(app).get('/api/creators/me/monetization').set('Cookie', creator.auth);
+    expect(eligibility.body.metrics.qualifiedViews).toBe(1);
+    expect(eligibility.body.requirements.find((item: { key: string }) => item.key === 'qualifiedViews').met).toBe(true);
+  });
+
+  it('keeps credentialed admin + creator checks in place for monetization settings and readiness warnings', async () => {
+    const creator = await register('RulesCreator');
+    const admin = await register('RulesAdmin');
+    fallbackStore.updateUser(admin.user.id, { role: 'ADMIN' });
+    const settings = await request(app).get('/api/admin/monetization/settings').set('Cookie', admin.auth);
+    expect(settings.status).toBe(200);
+    expect(settings.body.measurementReady).toBe(false);
+    expect((await request(app).patch('/api/admin/monetization/settings').set('Cookie', creator.auth).send({ minimumQualifiedViews: 1 })).status).toBe(403);
+    expect((await request(app).get('/api/creators/me/monetization').set('Cookie', creator.auth)).body.requirements.some((item: { key: string }) => item.key === 'qualifiedViews')).toBe(true);
+  });
+
   it('enforces configurable eligibility and reviews creator applications with admin-only approval', async () => {
     const creator = await register('Applicant');
     const admin = await register('ReviewAdmin');
@@ -30,7 +166,7 @@ describe('creator monetization and internal advertising', () => {
 
     const locked = await request(app).get('/api/creators/me/monetization').set('Cookie', creator.auth);
     expect(locked.status).toBe(200);
-    expect(locked.body.metrics.qualifiedViews).toBeNull();
+    expect(locked.body.metrics.qualifiedViews).toBe(0);
     expect(locked.body.eligible).toBe(false);
     expect((await request(app).post('/api/creators/me/monetization/applications').set('Cookie', creator.auth).send({})).status).toBe(409);
 

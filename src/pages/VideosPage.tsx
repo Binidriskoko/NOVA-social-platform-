@@ -185,7 +185,7 @@ export function VideosPage() {
             data-post-id={post.id}
             className="relative flex h-full snap-start items-center justify-center overflow-hidden bg-black pb-16 sm:pb-4"
           >
-            {post.image ? <PostMedia url={post.image} active={activePostId === post.id} autoPlay className="h-full max-h-full w-full max-w-full object-contain" alt={`Video by ${post.author.name}`} /> : null}
+            {post.image ? <PostMedia url={post.image} postId={post.id} measurementSource="videos" active={activePostId === post.id} autoPlay className="h-full max-h-full w-full max-w-full object-contain" alt={`Video by ${post.author.name}`} /> : null}
             <div className="pointer-events-none absolute inset-x-0 bottom-20 bg-gradient-to-t from-black/75 via-black/25 to-transparent px-4 pb-5 pt-20 sm:bottom-4 sm:pb-5">
               <div className="pointer-events-auto flex max-w-[75%] items-center gap-2">
                 <Avatar src={post.author.avatar} alt={post.author.name} size="sm" />

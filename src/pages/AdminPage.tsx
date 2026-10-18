@@ -93,12 +93,16 @@ export function AdminPage() {
 
 function MonetizationSettingsForm({ onSaved }: { onSaved: () => void }) {
   const [settings, setSettings] = useState<RecordValue | null>(null)
+  const [measurementReady, setMeasurementReady] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
   useEffect(() => {
-    apiRequest<{ settings: RecordValue }>('/api/admin/monetization/settings')
-      .then((response) => setSettings(response.settings))
+    apiRequest<{ settings: RecordValue; measurementReady: boolean }>('/api/admin/monetization/settings')
+      .then((response) => {
+        setSettings(response.settings)
+        setMeasurementReady(Boolean(response.measurementReady))
+      })
       .catch((loadError) => setError(loadError instanceof Error ? loadError.message : 'Unable to load settings.'))
   }, [])
   const save = async () => {
@@ -143,7 +147,11 @@ function MonetizationSettingsForm({ onSaved }: { onSaved: () => void }) {
         setSettings({ ...settings, [key]: key === 'minimumEngagementRate' ? numericValue / 100 : numericValue })
       }} className="mt-1 w-full rounded-xl border border-slate-200 p-2" /></label>
     })}</div>
-    <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800">Qualified views and watch time are not collected yet. Any non-zero requirement remains unmet until a validated measurement source is added.</p>
+    <p className={`rounded-xl p-3 text-sm ${measurementReady ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'}`}>
+      {measurementReady
+        ? 'The persistent backend has recorded qualified playback within the last 30 days. Non-zero monetization thresholds use these validated measurements.'
+        : 'No qualified playback has been confirmed in persistent backend storage within the last 30 days. The warning remains until a validated measurement is recorded.'}
+    </p>
     {error ? <p role="alert" className="text-sm text-rose-600">{error}</p> : null}{notice ? <p role="status" className="text-sm text-emerald-700">{notice}</p> : null}
     <div className="flex flex-wrap gap-2"><Button onClick={() => void save()} disabled={busy}>Save settings</Button><Button variant="ghost" onClick={() => void recheck()} disabled={busy}>Recheck creator eligibility</Button></div>
   </div>

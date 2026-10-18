@@ -22,6 +22,18 @@ const defaultMonetizationSettings = {
   revenueSharePercent: 90,
   minimumPayoutCents: 0,
 };
+const measurementSourceSchema = z.enum(['feed', 'videos', 'explore', 'profile', 'home', 'stories', 'messages', 'unknown']).default('unknown');
+const videoMeasurementStartSchema = z.object({
+  postId: z.string().trim().min(1, 'A postId is required.').max(128),
+  sessionId: z.string().trim().min(1, 'A sessionId is required.').max(128),
+  durationSeconds: z.number().int().min(1).max(86_400),
+  source: measurementSourceSchema.optional(),
+}).strict();
+const videoMeasurementHeartbeatSchema = z.object({
+  postId: z.string().trim().min(1).max(128),
+  sessionId: z.string().trim().min(1).max(128),
+  currentTimeSeconds: z.number().min(0).max(86_400),
+}).strict();
 const monetizationSettingsSchema = z.object({
   enabled: z.boolean().optional(),
   minimumFollowers: z.number().int().min(0).max(100_000_000).optional(),
@@ -73,6 +85,39 @@ async function getSettings() {
   return commerceStore.state.monetizationSettings ?? defaultMonetizationSettings;
 }
 
+async function getMeasurementReadiness() {
+  if (await isDatabaseAvailable()) {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const yes = await prisma.videoMeasurement.findFirst({ where: { qualified: true, createdAt: { gte: cutoff } }, select: { id: true } });
+    return Boolean(yes);
+  }
+  return false;
+}
+
+async function getCreatorMeasurementMetrics(userId: string, settings: Awaited<ReturnType<typeof getSettings>>) {
+  const cutoff = new Date(Date.now() - settings.qualifiedViewWindowDays * 24 * 60 * 60 * 1000);
+  if (await isDatabaseAvailable()) {
+    const records = await prisma.videoMeasurement.findMany({
+      where: {
+        qualified: true,
+        createdAt: { gte: cutoff },
+        post: { authorId: userId },
+      },
+      select: { watchSeconds: true },
+    });
+    const qualifiedViews = records.length;
+    const watchTimeSeconds = records.reduce((sum, record) => sum + record.watchSeconds, 0);
+    return { qualifiedViews, watchTimeSeconds, available: true };
+  }
+  const records = socialStore.state.videoMeasurements.filter((entry) => {
+    const createdAt = new Date(entry.createdAt).getTime();
+    return entry.qualified && createdAt >= cutoff.getTime() && socialStore.state.posts.some((post) => post.id === entry.postId && post.authorId === userId);
+  });
+  const qualifiedViews = records.length;
+  const watchTimeSeconds = records.reduce((sum, record) => sum + record.watchSeconds, 0);
+  return { qualifiedViews, watchTimeSeconds, available: records.length > 0 };
+}
+
 async function getEligibility(userId: string) {
   const settings = await getSettings();
   let accountCreatedAt: Date | null = null;
@@ -114,27 +159,57 @@ async function getEligibility(userId: string) {
       + socialStore.state.postShares.filter((share) => postIds.has(share.postId)).length;
   }
   const ageDays = Math.max(0, Math.floor((Date.now() - accountCreatedAt.getTime()) / 86_400_000));
+  const measurement = await getCreatorMeasurementMetrics(userId, settings);
   const metrics = {
     followers,
-    qualifiedViews: null as number | null,
-    watchTimeSeconds: null as number | null,
+    qualifiedViews: measurement.qualifiedViews,
+    watchTimeSeconds: measurement.watchTimeSeconds,
     publicPosts,
     engagements,
     engagementRate: publicPosts * followers === 0 ? 0 : engagements / (publicPosts * followers),
     accountAgeDays: ageDays,
-    qualifiedViewsAvailable: false,
-    watchTimeAvailable: false,
+    qualifiedViewsAvailable: measurement.available,
+    watchTimeAvailable: measurement.available,
   };
   const requirements = [
     { key: 'program', label: 'Monetization program is enabled', required: true, met: settings.enabled },
     { key: 'followers', label: `At least ${settings.minimumFollowers} followers`, required: settings.minimumFollowers, actual: followers, met: followers >= settings.minimumFollowers },
-    { key: 'qualifiedViews', label: `At least ${settings.minimumQualifiedViews} qualified views in ${settings.qualifiedViewWindowDays} days`, required: settings.minimumQualifiedViews, actual: metrics.qualifiedViews, met: settings.minimumQualifiedViews === 0, available: false },
-    { key: 'watchTime', label: `At least ${settings.minimumWatchTimeSeconds} seconds watch time`, required: settings.minimumWatchTimeSeconds, actual: metrics.watchTimeSeconds, met: settings.minimumWatchTimeSeconds === 0, available: false },
+    { key: 'qualifiedViews', label: `At least ${settings.minimumQualifiedViews} qualified views in ${settings.qualifiedViewWindowDays} days`, required: settings.minimumQualifiedViews, actual: metrics.qualifiedViews, met: settings.minimumQualifiedViews === 0 || (measurement.available && metrics.qualifiedViews >= settings.minimumQualifiedViews), available: measurement.available },
+    { key: 'watchTime', label: `At least ${settings.minimumWatchTimeSeconds} seconds watch time`, required: settings.minimumWatchTimeSeconds, actual: metrics.watchTimeSeconds, met: settings.minimumWatchTimeSeconds === 0 || (measurement.available && metrics.watchTimeSeconds >= settings.minimumWatchTimeSeconds), available: measurement.available },
     { key: 'engagement', label: `Engagement rate of at least ${(settings.minimumEngagementRate * 100).toFixed(1)}%`, required: settings.minimumEngagementRate, actual: metrics.engagementRate, met: metrics.engagementRate >= settings.minimumEngagementRate },
     { key: 'accountAge', label: `Account age of at least ${settings.minimumAccountAgeDays} days`, required: settings.minimumAccountAgeDays, actual: ageDays, met: ageDays >= settings.minimumAccountAgeDays },
     { key: 'publicPosts', label: `At least ${settings.minimumPublicPosts} public posts`, required: settings.minimumPublicPosts, actual: publicPosts, met: publicPosts >= settings.minimumPublicPosts },
   ];
   return { settings, metrics, requirements, eligible: requirements.every((requirement) => requirement.met), approved, active };
+}
+
+async function findPostForMeasurement(postId: string, viewerId: string) {
+  const dbAvailable = await isDatabaseAvailable();
+  if (dbAvailable) {
+    const post = await prisma.post.findUnique({
+      where: { id: postId },
+      select: { id: true, authorId: true, visibility: true },
+    });
+    if (!post) return null;
+    if (post.authorId === viewerId) return post;
+    if (post.visibility === 'PUBLIC') return post;
+    if (post.visibility === 'FOLLOWERS') {
+      const follow = await prisma.follow.findUnique({ where: { followerId_followingId: { followerId: viewerId, followingId: post.authorId } }, select: { id: true } });
+      if (follow) return post;
+      return null;
+    }
+    return null;
+  }
+  const post = socialStore.state.posts.find((entry) => entry.id === postId);
+  if (!post) return null;
+  if (post.authorId === viewerId) return post;
+  if (post.visibility === 'PUBLIC') return post;
+  if (post.visibility === 'FOLLOWERS') {
+    const isFollowing = socialStore.state.follows.some((follow) => follow.followerId === viewerId && follow.followingId === post.authorId);
+    if (isFollowing) return post;
+    return null;
+  }
+  return null;
 }
 
 router.use(requireActiveAccountIfAuthenticated);
@@ -183,7 +258,104 @@ router.post('/creators/me/monetization/applications', requireAuth, async (req, r
   return res.status(201).json({ application });
 });
 
-router.get('/admin/monetization/settings', ...admin, async (_req, res) => res.json({ settings: await getSettings() }));
+router.get('/admin/monetization/settings', ...admin, async (_req, res) => {
+  const settings = await getSettings();
+  res.json({ settings, measurementReady: await getMeasurementReadiness() });
+});
+
+router.post('/monetization/video-views/start', requireAuth, async (req, res) => {
+  const parsed = videoMeasurementStartSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ message: 'Invalid video playback session.', errors: parsed.error.flatten() });
+  const body = parsed.data;
+  const post = await findPostForMeasurement(body.postId, req.user!.id);
+  if (!post || post.authorId === req.user!.id) return res.status(403).json({ message: 'This video is not eligible for playback measurement.' });
+  const startedAt = timestamp();
+  if (await isDatabaseAvailable()) {
+    try {
+      const record = await prisma.videoMeasurement.create({
+        data: {
+          postId: body.postId,
+          viewerId: req.user!.id,
+          sessionId: body.sessionId,
+          source: body.source ?? 'unknown',
+          watchSeconds: 0,
+          durationSeconds: body.durationSeconds,
+          lastPositionSeconds: 0,
+          lastHeartbeatAt: startedAt,
+          active: true,
+          startedAt,
+          endedAt: startedAt,
+          qualified: false,
+        },
+      });
+      return res.status(201).json({ sessionId: record.sessionId, startedAt: record.startedAt });
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002') {
+        return res.status(409).json({ message: 'This playback session has already been recorded.', duplicate: true });
+      }
+      throw error;
+    }
+  }
+  const exists = socialStore.state.videoMeasurements.some((entry) => entry.postId === body.postId && entry.viewerId === req.user!.id && entry.sessionId === body.sessionId);
+  if (exists) return res.status(409).json({ message: 'This playback session has already been recorded.', duplicate: true });
+  socialStore.state.videoMeasurements.push({ id: `video_measurement_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, postId: body.postId, viewerId: req.user!.id, sessionId: body.sessionId, source: body.source ?? 'unknown', watchSeconds: 0, durationSeconds: body.durationSeconds, lastPositionSeconds: 0, lastHeartbeatAt: startedAt.toISOString(), active: true, startedAt: startedAt.toISOString(), endedAt: startedAt.toISOString(), qualified: false, createdAt: startedAt.toISOString() });
+  return res.status(201).json({ sessionId: body.sessionId, startedAt });
+});
+
+router.post('/monetization/video-views/heartbeat', requireAuth, async (req, res) => {
+  const parsed = videoMeasurementHeartbeatSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ message: 'Invalid playback heartbeat.', errors: parsed.error.flatten() });
+  const body = parsed.data;
+  const now = timestamp();
+  if (await isDatabaseAvailable()) {
+    const record = await prisma.videoMeasurement.findUnique({ where: { postId_viewerId_sessionId: { postId: body.postId, viewerId: req.user!.id, sessionId: body.sessionId } } });
+    if (!record || !record.active || !record.lastHeartbeatAt) return res.status(409).json({ message: 'Playback session is not active.' });
+    const elapsed = (now.getTime() - record.lastHeartbeatAt.getTime()) / 1000;
+    const positionDelta = body.currentTimeSeconds - record.lastPositionSeconds;
+    const creditedSeconds = elapsed > 0 && elapsed <= 15 && positionDelta > 0 && positionDelta <= elapsed * 4 + 2 ? Math.floor(elapsed) : 0;
+    const updated = await prisma.videoMeasurement.updateMany({
+      where: { id: record.id, active: true, lastHeartbeatAt: record.lastHeartbeatAt },
+      data: { watchSeconds: { increment: creditedSeconds }, lastPositionSeconds: Math.floor(body.currentTimeSeconds), lastHeartbeatAt: now },
+    });
+    if (!updated.count) return res.status(409).json({ message: 'Playback heartbeat was already processed.' });
+    return res.json({ accepted: true, creditedSeconds });
+  }
+  const record = socialStore.state.videoMeasurements.find((entry) => entry.postId === body.postId && entry.viewerId === req.user!.id && entry.sessionId === body.sessionId);
+  if (!record || !record.active || !record.lastHeartbeatAt) return res.status(409).json({ message: 'Playback session is not active.' });
+  const elapsed = (now.getTime() - new Date(record.lastHeartbeatAt).getTime()) / 1000;
+  const positionDelta = body.currentTimeSeconds - record.lastPositionSeconds;
+  const creditedSeconds = elapsed > 0 && elapsed <= 15 && positionDelta > 0 && positionDelta <= elapsed * 4 + 2 ? Math.floor(elapsed) : 0;
+  record.watchSeconds += creditedSeconds;
+  record.lastPositionSeconds = Math.floor(body.currentTimeSeconds);
+  record.lastHeartbeatAt = now.toISOString();
+  return res.json({ accepted: true, creditedSeconds });
+});
+
+router.post('/monetization/video-views/finish', requireAuth, async (req, res) => {
+  const parsed = z.object({ postId: z.string().trim().min(1).max(128), sessionId: z.string().trim().min(1).max(128) }).strict().safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ message: 'Invalid playback session.' });
+  const { postId, sessionId } = parsed.data;
+  const settings = await getSettings();
+  if (await isDatabaseAvailable()) {
+    const record = await prisma.videoMeasurement.findUnique({ where: { postId_viewerId_sessionId: { postId, viewerId: req.user!.id, sessionId } } });
+    if (!record) return res.status(404).json({ message: 'Playback session not found.' });
+    if (!record.active) return res.status(409).json({ message: 'Playback session has already been closed.' });
+    const finished = await prisma.videoMeasurement.updateMany({
+      where: { id: record.id, active: true },
+      data: { active: false, endedAt: timestamp(), qualified: record.watchSeconds >= settings.minimumWatchTimeSeconds },
+    });
+    if (!finished.count) return res.status(409).json({ message: 'Playback session has already been closed.' });
+    return res.json({ accepted: true, watchSeconds: record.watchSeconds, qualified: record.watchSeconds >= settings.minimumWatchTimeSeconds });
+  }
+  const record = socialStore.state.videoMeasurements.find((entry) => entry.postId === postId && entry.viewerId === req.user!.id && entry.sessionId === sessionId);
+  if (!record) return res.status(404).json({ message: 'Playback session not found.' });
+  if (!record.active) return res.status(409).json({ message: 'Playback session has already been closed.' });
+  record.active = false;
+  record.endedAt = timestamp().toISOString();
+  record.qualified = record.watchSeconds >= settings.minimumWatchTimeSeconds;
+  return res.json({ accepted: true, watchSeconds: record.watchSeconds, qualified: record.qualified });
+});
+
 
 router.patch('/admin/monetization/settings', ...admin, async (req, res) => {
   const parsed = monetizationSettingsSchema.safeParse(req.body);

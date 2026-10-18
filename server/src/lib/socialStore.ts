@@ -41,6 +41,23 @@ export type StoryRecord = {
 
 export type StoryViewRecord = { id: string; storyId: string; viewerId: string; viewedAt: string };
 
+export type VideoMeasurementRecord = {
+  id: string;
+  postId: string;
+  viewerId: string;
+  sessionId: string;
+  source: string;
+  watchSeconds: number;
+  durationSeconds: number;
+  lastPositionSeconds: number;
+  lastHeartbeatAt: string | null;
+  active: boolean;
+  startedAt: string;
+  endedAt: string;
+  qualified: boolean;
+  createdAt: string;
+};
+
 export type CommunityRecord = {
   id: string;
   ownerId: string;
@@ -226,6 +243,7 @@ const globalStore = globalThis as typeof globalThis & {
     posts: SocialPostRecord[];
     stories: StoryRecord[];
     storyViews: StoryViewRecord[];
+    videoMeasurements: VideoMeasurementRecord[];
     comments: SocialCommentRecord[];
     postSaves: { id: string; postId: string; userId: string; createdAt: string }[];
     postShares: { id: string; postId: string; userId: string; createdAt: string }[];
@@ -254,6 +272,7 @@ if (!globalStore.__novaSocialStore) {
     posts: [],
     stories: [],
     storyViews: [],
+    videoMeasurements: [],
     comments: [],
     postSaves: [],
     postShares: [],
@@ -292,6 +311,7 @@ export const socialStore = {
       posts: [],
       stories: [],
       storyViews: [],
+      videoMeasurements: [],
       comments: [],
       postSaves: [],
       postShares: [],

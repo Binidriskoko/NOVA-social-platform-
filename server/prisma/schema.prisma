@@ -176,6 +176,7 @@ model User {
   marketplaceDisputes      MarketplaceDispute[]      @relation("DisputeReporter")
   financialPaymentIntents  PaymentIntent[]           @relation("PaymentPayer")
   uploadedMedia            RegistrationMediaObject[]
+  liveBroadcasts           LiveBroadcast[]
   liveReplays              LiveReplay[]
   liveBroadcastComments    LiveBroadcastComment[]
   liveBroadcastReactions   LiveBroadcastReaction[]
@@ -594,6 +595,25 @@ model LiveReplay {
   publishedPost Post? @relation("ReplayPost", fields: [publishedPostId], references: [id], onDelete: SetNull)
 
   @@index([hostId, status, createdAt])
+}
+
+model LiveBroadcast {
+  id              String   @id
+  hostId          String
+  title           String
+  description     String?
+  visibility      String   @default("private")
+  status          String   @default("paused")
+  recordingStatus String   @default("UNAVAILABLE")
+  replayUrl       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  endedAt         DateTime?
+
+  host User @relation(fields: [hostId], references: [id], onDelete: Cascade)
+
+  @@index([hostId, status, createdAt])
+  @@index([visibility, status, createdAt])
 }
 
 model LiveBroadcastComment {

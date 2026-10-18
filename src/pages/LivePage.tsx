@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Heart, Headphones, Mic, MicOff, PhoneOff, Radio, RefreshCw, Send, Share2, Users, Video, VideoOff, Volume2 } from 'lucide-react'
-import { Room, RoomEvent, Track, type RemoteTrack } from 'livekit-client'
-import { useSearchParams } from 'react-router-dom'
+import type { RemoteTrack, Room, Track } from 'livekit-client'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Button } from '../components/ui/Button'
+import { PostMedia } from '../components/PostMedia'
 import { useAuth } from '../context/AuthContext'
 import { apiRequest, uploadVideo } from '../lib/api'
 import { openAuthenticatedEventStream } from '../lib/eventStream'
 import { cameraSwitchErrorMessage, switchToNextCamera } from '../lib/cameraSwitching'
 
 type LiveComment = { id: string; userId: string; text: string; createdAt: string }
+type PendingLiveRecording = { liveId: string; blob: Blob; durationSeconds: number; mediaUrl?: string; contentType?: string }
 type LiveSession = {
   id: string
   hostId: string
@@ -23,6 +25,8 @@ type LiveSession = {
   host?: { name: string; avatar?: string | null } | null
 }
 type LiveReplay = { id: string; title: string; mediaUrl: string; durationSeconds: number; status: string; createdAt: string; publishedPostId?: string | null }
+const cameraTrackSource = 'camera' as Track.Source
+const microphoneTrackSource = 'microphone' as Track.Source
 
 function AttachedTrack({ track, muted = false, className }: { track: Track; muted?: boolean; className: string }) {
   const elementRef = useRef<HTMLMediaElement | null>(null)
@@ -34,7 +38,7 @@ function AttachedTrack({ track, muted = false, className }: { track: Track; mute
     return () => { track.detach(element) }
   }, [track])
 
-  if (track.kind === Track.Kind.Video) {
+  if (track.kind === 'video') {
     return <video ref={(element) => { elementRef.current = element }} autoPlay muted={muted} playsInline className={className} />
   }
   return <audio ref={(element) => { elementRef.current = element }} autoPlay className={className} />
@@ -60,11 +64,16 @@ export function LivePage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [replays, setReplays] = useState<LiveReplay[]>([])
+  const [replaysLoading, setReplaysLoading] = useState(true)
+  const [replayLoadError, setReplayLoadError] = useState('')
   const [replayChoice, setReplayChoice] = useState<LiveReplay | null>(null)
   const [replayVisibility, setReplayVisibility] = useState<'PUBLIC' | 'FOLLOWERS' | 'PRIVATE'>('PUBLIC')
   const [recordingError, setRecordingError] = useState('')
+  const [recordingRetryLiveId, setRecordingRetryLiveId] = useState('')
+  const [recordingRetryBusy, setRecordingRetryBusy] = useState(false)
   const [shareNotice, setShareNotice] = useState('')
   const [replayBusy, setReplayBusy] = useState(false)
+  const [replayActionError, setReplayActionError] = useState('')
   const roomRef = useRef<Room | null>(null)
   const hostRoomRef = useRef<Room | null>(null)
   const joinedLiveRef = useRef<LiveSession | null>(null)
@@ -73,7 +82,9 @@ export function LivePage() {
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recordingChunksRef = useRef<Blob[]>([])
   const recordingStartedAtRef = useRef(0)
+  const pendingRecordingRef = useRef<PendingLiveRecording | null>(null)
   const attemptedNotificationLiveRef = useRef('')
+  const replayActionInFlightRef = useRef(false)
 
   const setLiveState = useCallback((live: LiveSession) => {
     const current = livesRef.current.find((entry) => entry.id === live.id)
@@ -87,6 +98,11 @@ export function LivePage() {
       setJoinedLive(updated)
     }
   }, [])
+
+  const retryLoadReplays = async () => {
+    setReplaysLoading(true)
+    await loadReplays()
+  }
 
   const clearRoom = useCallback(async (room: Room) => {
     intentionalDisconnectRef.current.add(room)
@@ -105,7 +121,7 @@ export function LivePage() {
     await room.disconnect(true)
   }, [])
 
-  const fetchLives = useCallback(() => apiRequest<{ lives: LiveSession[] }>('/api/live'), [])
+  const fetchLives = useCallback((signal?: AbortSignal) => apiRequest<{ lives: LiveSession[] }>('/api/live', { signal }), [])
 
   const applyLives = useCallback((lives: LiveSession[]) => {
     livesRef.current = lives
@@ -128,6 +144,40 @@ export function LivePage() {
     }
   }, [applyLives, fetchLives])
 
+  const loadReplays = useCallback(async (signal?: AbortSignal) => {
+    setReplayLoadError('')
+    try {
+      const { replays: savedReplays } = await apiRequest<{ replays: LiveReplay[] }>('/api/live/replays', { signal })
+      if (!signal?.aborted) setReplays(savedReplays)
+    } catch (loadError) {
+      if (!signal?.aborted) setReplayLoadError(loadError instanceof Error ? loadError.message : 'Unable to load saved live replays.')
+    } finally {
+      if (!signal?.aborted) setReplaysLoading(false)
+    }
+  }, [])
+
+  const savePendingRecording = useCallback(async (liveId: string) => {
+    const pending = pendingRecordingRef.current
+    if (!pending || pending.liveId !== liveId) throw new Error('The local replay data is no longer available. No recording was uploaded.')
+    if (!pending.mediaUrl || !pending.contentType) {
+      const extension = pending.blob.type.includes('mp4') ? 'mp4' : pending.blob.type.includes('ogg') ? 'ogg' : 'webm'
+      const recordingFile = new File([pending.blob], `live-${liveId}.${extension}`, { type: pending.blob.type || 'video/webm' })
+      const uploaded = await uploadVideo(recordingFile)
+      pending.mediaUrl = uploaded.mediaUrl
+      pending.contentType = uploaded.contentType
+    }
+    const response = await apiRequest<{ replay: LiveReplay; live: LiveSession; duplicate?: boolean }>(`/api/live/${encodeURIComponent(liveId)}/replay`, {
+      method: 'POST',
+      body: JSON.stringify({ mediaUrl: pending.mediaUrl, contentType: pending.contentType, durationSeconds: pending.durationSeconds }),
+    })
+    pendingRecordingRef.current = null
+    setRecordingRetryLiveId('')
+    setRecordingError('')
+    setReplays((current) => [response.replay, ...current.filter((entry) => entry.id !== response.replay.id)])
+    setReplayChoice(response.replay)
+    return response.replay
+  }, [])
+
   const refreshLives = () => {
     setLoading(true)
     setError('')
@@ -135,23 +185,21 @@ export function LivePage() {
   }
 
   useEffect(() => {
-    let cancelled = false
-    void fetchLives()
-      .then(({ lives: currentLives }) => { if (!cancelled) applyLives(currentLives) })
+    const controller = new AbortController()
+    void fetchLives(controller.signal)
+      .then(({ lives: currentLives }) => { if (!controller.signal.aborted) applyLives(currentLives) })
       .catch((loadError: unknown) => {
-        if (!cancelled) setError(loadError instanceof Error ? loadError.message : 'Unable to load live sessions.')
+        if (!controller.signal.aborted) setError(loadError instanceof Error ? loadError.message : 'Unable to load live sessions.')
       })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
   }, [applyLives, fetchLives])
 
   useEffect(() => {
-    let active = true
-    apiRequest<{ replays: LiveReplay[] }>('/api/live/replays')
-      .then(({ replays: savedReplays }) => { if (active) setReplays(savedReplays) })
-      .catch((loadError: unknown) => { if (active) setError(loadError instanceof Error ? loadError.message : 'Unable to load saved live replays.') })
-    return () => { active = false }
-  }, [])
+    const controller = new AbortController()
+    void loadReplays(controller.signal)
+    return () => controller.abort()
+  }, [loadReplays])
 
   useEffect(() => {
     const source = openAuthenticatedEventStream('/api/realtime')
@@ -230,6 +278,7 @@ export function LivePage() {
     let room: Room | null = null
     try {
       const { token, url } = await apiRequest<{ token: string; url: string }>(`/api/live/${encodeURIComponent(live.id)}/token`, { method: 'POST' })
+      const { Room, RoomEvent } = await import('livekit-client')
       room = new Room({ adaptiveStream: true, dynacast: true })
       roomRef.current = room
       hostRoomRef.current = room
@@ -259,7 +308,7 @@ export function LivePage() {
       await room.connect(url, token)
       await room.localParticipant.setMicrophoneEnabled(true)
       await room.localParticipant.setCameraEnabled(true, { resolution: { width: 1280, height: 720 } })
-      if (!room.localParticipant.getTrackPublication(Track.Source.Camera)?.track || !room.localParticipant.getTrackPublication(Track.Source.Microphone)?.track) {
+      if (!room.localParticipant.getTrackPublication(cameraTrackSource)?.track || !room.localParticipant.getTrackPublication(microphoneTrackSource)?.track) {
         throw new Error('LiveKit did not publish the camera and microphone. The broadcast has not started.')
       }
       const response = await apiRequest<{ live: LiveSession; notificationWarning?: boolean }>(`/api/live/${encodeURIComponent(live.id)}/start`, { method: 'POST' })
@@ -270,8 +319,8 @@ export function LivePage() {
       setHostCameraOn(true)
       setRecordingError('')
       try {
-        const videoTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track
-        const audioTrack = room.localParticipant.getTrackPublication(Track.Source.Microphone)?.track
+        const videoTrack = room.localParticipant.getTrackPublication(cameraTrackSource)?.track
+        const audioTrack = room.localParticipant.getTrackPublication(microphoneTrackSource)?.track
         if (!videoTrack || !audioTrack || typeof MediaRecorder === 'undefined') throw new Error('This browser cannot record the live camera and microphone stream.')
         const stream = new MediaStream([videoTrack.mediaStreamTrack, audioTrack.mediaStreamTrack])
         const mimeType = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
@@ -329,28 +378,24 @@ export function LivePage() {
         })
         const durationSeconds = Math.max(1, Math.floor((Date.now() - recordingStartedAtRef.current) / 1000))
         if (recording.size > 100 * 1024 * 1024) throw new Error('This replay exceeds the 100 MB video upload limit and was not saved.')
-        const extension = recording.type.includes('mp4') ? 'mp4' : recording.type.includes('ogg') ? 'ogg' : 'webm'
-        const recordingFile = new File([recording], `live-${live.id}.${extension}`, { type: recording.type || 'video/webm' })
-        const uploaded = await uploadVideo(recordingFile)
-        const { replay } = await apiRequest<{ replay: LiveReplay }>(`/api/live/${encodeURIComponent(live.id)}/replay`, {
-          method: 'POST',
-          body: JSON.stringify({ mediaUrl: uploaded.mediaUrl, contentType: uploaded.contentType, durationSeconds }),
-        })
-        savedReplay = replay
-        setReplays((current) => [replay, ...current.filter((entry) => entry.id !== replay.id)])
-        setReplayChoice(replay)
+        pendingRecordingRef.current = { liveId: live.id, blob: recording, durationSeconds }
+        savedReplay = await savePendingRecording(live.id)
       } else {
-        setRecordingError(recordingError || 'A replay is unavailable because this browser did not record a complete camera-and-microphone stream.')
+        setRecordingError(recordingError || 'No replay was produced. LiveKit does not automatically record broadcasts; this device/browser must support MediaRecorder, and the server must have DATABASE_URL configured with the Prisma migrations applied.')
       }
     } catch (recordError) {
       setRecordingError(recordError instanceof Error ? recordError.message : 'The live replay could not be finalized or stored.')
+      if (pendingRecordingRef.current?.liveId === live.id) setRecordingRetryLiveId(live.id)
     } finally {
       recorderRef.current = null
       recordingChunksRef.current = []
     }
     try {
-      const response = await apiRequest<{ live: LiveSession }>(`/api/live/${encodeURIComponent(live.id)}/end`, { method: 'POST' })
+      const response = await apiRequest<{ live: LiveSession; persistenceWarning?: boolean }>(`/api/live/${encodeURIComponent(live.id)}/end`, { method: 'POST' })
       setLiveState(response.live)
+      if (response.persistenceWarning) {
+        setRecordingError((current) => [current, 'The broadcast ended, but its session history could not be saved. Configure the server DATABASE_URL, apply Prisma migrations, and ensure PostgreSQL is reachable.'].filter(Boolean).join(' '))
+      }
       if (hostRoomRef.current) await clearRoom(hostRoomRef.current)
       if (savedReplay) setReplayChoice(savedReplay)
     } catch (endError) {
@@ -364,6 +409,18 @@ export function LivePage() {
         }
       }
       setBusy(false)
+    }
+  }
+
+  const retrySaveRecording = async () => {
+    if (recordingRetryBusy || !recordingRetryLiveId) return
+    setRecordingRetryBusy(true)
+    try {
+      await savePendingRecording(recordingRetryLiveId)
+    } catch (retryError) {
+      setRecordingError(retryError instanceof Error ? retryError.message : 'Unable to save the replay. Check your connection and retry.')
+    } finally {
+      setRecordingRetryBusy(false)
     }
   }
 
@@ -397,7 +454,7 @@ export function LivePage() {
     setCameraSwitchBusy(true)
     setError('')
     try {
-      const cameraTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track
+      const cameraTrack = room.localParticipant.getTrackPublication(cameraTrackSource)?.track
       if (!cameraTrack) throw new Error('Your camera is not active. Turn it on before switching cameras.')
       if (!navigator.mediaDevices?.enumerateDevices) throw new Error('This browser does not support camera device selection.')
       const devices = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === 'videoinput')
@@ -423,6 +480,7 @@ export function LivePage() {
       setJoinedLive(response.live)
       setLiveState(response.live)
       const { token, url } = await apiRequest<{ token: string; url: string }>(`/api/live/${encodeURIComponent(live.id)}/token`, { method: 'POST' })
+      const { Room, RoomEvent } = await import('livekit-client')
       room = new Room({ adaptiveStream: true, dynacast: true })
       roomRef.current = room
       room.on(RoomEvent.TrackSubscribed, (track, _publication, participant) => {
@@ -533,8 +591,10 @@ export function LivePage() {
   }
 
   const publishReplay = async (replay: LiveReplay) => {
-    if (replayBusy) return
+    if (replayActionInFlightRef.current) return
+    replayActionInFlightRef.current = true
     setReplayBusy(true)
+    setReplayActionError('')
     setError('')
     try {
       const response = await apiRequest<{ replay: LiveReplay; post: { id: string }; duplicate: boolean }>(`/api/live/${encodeURIComponent(replay.id)}/replay/publish`, {
@@ -544,23 +604,30 @@ export function LivePage() {
       setReplays((current) => current.map((entry) => entry.id === replay.id ? response.replay : entry))
       setReplayChoice(null)
     } catch (publishError) {
-      setError(publishError instanceof Error ? publishError.message : 'Unable to publish this replay.')
+      setReplayActionError(publishError instanceof Error ? publishError.message : 'Unable to publish this replay. Check your connection and retry.')
     } finally {
+      replayActionInFlightRef.current = false
       setReplayBusy(false)
     }
   }
 
   const deleteReplay = async (replay: LiveReplay) => {
     if (!window.confirm('Delete this unpublished live replay? This cannot be undone.')) return
+    if (replayActionInFlightRef.current) return
+    replayActionInFlightRef.current = true
     setReplayBusy(true)
+    setReplayActionError('')
     setError('')
     try {
       await apiRequest(`/api/live/${encodeURIComponent(replay.id)}/replay`, { method: 'DELETE' })
       setReplays((current) => current.filter((entry) => entry.id !== replay.id))
       setReplayChoice(null)
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Unable to delete this replay.')
+      const message = deleteError instanceof Error ? deleteError.message : 'Unable to delete this replay. Check your connection and retry.'
+      if (replayChoice?.id === replay.id) setReplayActionError(message)
+      else setError(message)
     } finally {
+      replayActionInFlightRef.current = false
       setReplayBusy(false)
     }
   }
@@ -598,25 +665,21 @@ export function LivePage() {
   }, [busy, joinedLive?.id, lives, loading, searchParams])
 
   const hostLive = lives.find((live) => live.hostId === user?.id && live.status === 'live')
-  const localVideoTrack = hostRoom?.localParticipant.getTrackPublication(Track.Source.Camera)?.track
-  const remoteVideoTracks = remoteTracks.filter(({ track }) => track.kind === Track.Kind.Video)
-  const remoteAudioTracks = remoteTracks.filter(({ track }) => track.kind === Track.Kind.Audio)
+  const localVideoTrack = hostRoom?.localParticipant.getTrackPublication(cameraTrackSource)?.track
+  const remoteVideoTracks = remoteTracks.filter(({ track }) => track.kind === 'video')
+  const remoteAudioTracks = remoteTracks.filter(({ track }) => track.kind === 'audio')
   const activeLive = joinedLive ?? (hostLive && hostRoom ? hostLive : null)
   const isHost = Boolean(activeLive && activeLive.hostId === user?.id)
 
   useEffect(() => {
-    if (!activeLive) return
+    if (!joinedLive?.id) return
+    const liveId = joinedLive.id
     let active = true
     const timer = window.setInterval(() => {
       void (async () => {
         try {
-          const currentLive = joinedLiveRef.current
-          if (currentLive) {
-            const heartbeat = await apiRequest<{ live: LiveSession }>(`/api/live/${encodeURIComponent(currentLive.id)}/viewers/heartbeat`, { method: 'POST' })
-            if (active) setLiveState(heartbeat.live)
-          }
-          const response = await fetchLives()
-          if (active) applyLives(response.lives)
+          const heartbeat = await apiRequest<{ live: LiveSession }>(`/api/live/${encodeURIComponent(liveId)}/viewers/heartbeat`, { method: 'POST' })
+          if (active) setLiveState(heartbeat.live)
         } catch (pollError) {
           if (active) setError(pollError instanceof Error ? pollError.message : 'Live audience status could not be refreshed.')
         }
@@ -626,7 +689,7 @@ export function LivePage() {
       active = false
       window.clearInterval(timer)
     }
-  }, [activeLive?.id, applyLives, fetchLives, setLiveState])
+  }, [joinedLive?.id, setLiveState])
 
   return (
     <>
@@ -683,6 +746,7 @@ export function LivePage() {
 
       <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900" role="status">Live broadcasts use LiveKit for encrypted, low-latency audio and video. Your administrator must configure the LiveKit media server.</div>
       {error ? <p className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700" role="alert">{error}</p> : null}
+      {recordingError ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" role="status"><p>{recordingError}</p>{recordingRetryLiveId ? <Button variant="secondary" size="sm" className="mt-2" onClick={() => void retrySaveRecording()} disabled={recordingRetryBusy}>{recordingRetryBusy ? 'Retrying replay save…' : 'Retry replay save'}</Button> : null}</div> : null}
 
       <form onSubmit={(event) => void createLive(event)} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
         <h3 className="font-semibold text-slate-900">Create a live session</h3>
@@ -704,6 +768,7 @@ export function LivePage() {
             <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-50 text-indigo-700"><Headphones className="h-5 w-5" aria-hidden="true" /></span>
             <div className="min-w-0 flex-1"><h3 className="truncate font-semibold text-slate-900">{live.title}</h3><p className="mt-1 text-sm text-slate-500">{live.description || `Hosted by ${live.host?.name ?? (live.hostId === user?.id ? 'you' : 'a NOVAKOKO member')}`} · {live.viewerCount} viewers · {live.status}</p></div>
             {live.hostId === user?.id && live.status === 'paused' ? <Button variant="primary" size="sm" onClick={() => void startBroadcast(live)} disabled={busy}>Start broadcasting</Button> : null}
+            {live.hostId === user?.id && live.status === 'live' && !hostRoom ? <Button variant="secondary" size="sm" onClick={() => void endBroadcast(live)} disabled={busy}>Finish ending</Button> : null}
             {live.hostId !== user?.id && live.status === 'live' && joinedLive?.id !== live.id ? <Button variant="primary" size="sm" onClick={() => void joinLive(live)} disabled={busy}>Join live</Button> : null}
           </li>
         ))}
@@ -712,24 +777,37 @@ export function LivePage() {
       {replays.length ? <section className="rounded-2xl border border-slate-200 bg-white p-4">
         <h2 className="font-semibold text-slate-900">Saved live replays</h2>
         <ul className="mt-3 space-y-3">{replays.map((replay) => <li key={replay.id} className="flex flex-wrap items-center gap-3 rounded-xl bg-slate-50 p-3">
-          <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-slate-900">{replay.title}</p><p className="text-xs text-slate-500">{new Date(replay.createdAt).toLocaleString()} · {replay.status === 'PUBLISHED' ? 'Published' : `${replay.durationSeconds}s`}</p></div>
-          {replay.status === 'READY' ? <><Button variant="primary" size="sm" onClick={() => setReplayChoice(replay)}>POST LIVE VIDEO</Button><Button variant="secondary" size="sm" onClick={() => void deleteReplay(replay)}>DELETE</Button></> : null}
+          <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-slate-900">{replay.title}</p><p className="text-xs text-slate-500">{new Date(replay.createdAt).toLocaleString()} · {replay.status === 'PUBLISHED' ? 'Published' : replay.status === 'DELETING' ? 'Delete pending' : `${replay.durationSeconds}s`}</p></div>
+          {replay.status === 'READY' ? <><Button variant="primary" size="sm" onClick={() => { setReplayChoice(replay); setReplayActionError('') }}>SAVE AND POST</Button><Button variant="secondary" size="sm" onClick={() => void deleteReplay(replay)}>DELETE</Button></> : null}
+          {replay.status === 'DELETING' ? <Button variant="secondary" size="sm" onClick={() => void deleteReplay(replay)}>RETRY DELETE</Button> : null}
+          {replay.status === 'PUBLISHED' ? <Button variant="secondary" size="sm" onClick={() => { setReplayChoice(replay); setReplayActionError('') }}>PREVIEW</Button> : null}
         </li>)}</ul>
       </section> : null}
+      {replaysLoading ? <p className="text-sm text-slate-500" role="status">Loading saved replays…</p> : null}
+      {replayLoadError ? <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700" role="alert"><p>{replayLoadError}</p><Button variant="secondary" size="sm" className="mt-2" onClick={() => void retryLoadReplays()} disabled={replaysLoading}>{replaysLoading ? 'Retrying…' : 'Retry'}</Button></div> : null}
       <div className="flex justify-end"><Button variant="secondary" size="sm" onClick={refreshLives} disabled={loading}><Users className="h-4 w-4" aria-hidden="true" /> Refresh</Button></div>
     </div>}
     {replayChoice ? <div className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/60 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-labelledby="live-replay-title">
       <section className="w-full max-w-lg rounded-t-3xl bg-white p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:rounded-3xl">
-        <h2 id="live-replay-title" className="text-xl font-semibold text-slate-900">Your live replay is saved</h2>
-        <p className="mt-2 text-sm text-slate-600">The video was uploaded to NOVAKOKO storage and can now be published as a post.</p>
-        <label className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700">Audience
+        <h2 id="live-replay-title" className="text-xl font-semibold text-slate-900">{replayChoice.status === 'PUBLISHED' ? 'Your live replay was posted' : 'Your live replay is saved'}</h2>
+        <p className="mt-2 text-sm text-slate-600">{replayChoice.status === 'PUBLISHED' ? 'This recording is available in your feed and can be played below.' : 'Preview your recording before sharing it as a video post.'}</p>
+        <div className="mt-4 overflow-hidden rounded-xl bg-black">
+          <PostMedia url={replayChoice.mediaUrl} alt={`${replayChoice.title} live replay`} className="max-h-64 w-full object-contain" />
+        </div>
+        {replayChoice.status === 'READY' ? <label className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700">Audience
           <select value={replayVisibility} onChange={(event) => setReplayVisibility(event.target.value as typeof replayVisibility)} className="rounded-lg border border-slate-200 bg-white px-2 py-1.5">
             <option value="PUBLIC">Everyone</option><option value="FOLLOWERS">Followers</option><option value="PRIVATE">Only me</option>
           </select>
-        </label>
+        </label> : null}
+        {replayActionError ? <p className="mt-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-700" role="alert">{replayActionError}</p> : null}
         <div className="mt-5 grid grid-cols-2 gap-2">
-          <Button variant="primary" onClick={() => void publishReplay(replayChoice)} disabled={replayBusy}>POST LIVE VIDEO</Button>
-          <Button variant="secondary" onClick={() => void deleteReplay(replayChoice)} disabled={replayBusy}>DELETE</Button>
+          {replayChoice.status === 'READY' ? <>
+            <Button variant="primary" onClick={() => void publishReplay(replayChoice)} disabled={replayBusy}>{replayBusy ? 'Saving…' : 'Save and post'}</Button>
+            <Button variant="secondary" onClick={() => void deleteReplay(replayChoice)} disabled={replayBusy}>{replayBusy ? 'Please wait…' : 'Delete'}</Button>
+          </> : <>
+            {replayChoice.publishedPostId ? <Link to="/profile" className="inline-flex min-h-11 items-center justify-center rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white">View post</Link> : null}
+            <Button variant="secondary" onClick={() => setReplayChoice(null)}>Close</Button>
+          </>}
         </div>
       </section>
     </div> : null}

@@ -46,6 +46,18 @@ export async function getLiveKitParticipants(room: string) {
   return service.listParticipants(room);
 }
 
+export async function endLiveKitRoom(room: string) {
+  if (!isLiveKitConfigured() || !env.LIVEKIT_URL || !env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET) {
+    throw new Error('LiveKit is not configured.');
+  }
+  const serviceUrl = new URL(env.LIVEKIT_URL);
+  serviceUrl.protocol = serviceUrl.protocol === 'wss:' ? 'https:' : 'http:';
+  const service = new RoomServiceClient(serviceUrl.toString(), env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
+  if ((await service.listRooms([room])).some((activeRoom) => activeRoom.name === room)) {
+    await service.deleteRoom(room);
+  }
+}
+
 export function callRoomName(callId: string) {
   return `nova-call-${callId}`;
 }

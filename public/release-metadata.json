@@ -1,0 +1,8 @@
+{
+  "versionName": "1.1.0",
+  "versionCode": 2,
+  "releaseNotes": "Includes Android packaging of the latest NOVAKOKO frontend code and an in-app update notice. Fixes UI issues and improves live notifications.",
+  "releaseDate": "2026-10-18T00:00:00Z",
+  "minSupportedVersionCode": 1,
+  "downloadPageUrl": "https://github.com/Binidriskoko/NOVA-social-platform-/releases/latest"
+}

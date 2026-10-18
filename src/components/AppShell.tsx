@@ -23,6 +23,7 @@ import { Avatar } from './ui/Avatar'
 import { cn } from '../utils/cn'
 import { Button } from './ui/Button'
 import { useAuth } from '../context/AuthContext'
+import { UpdateChecker } from './UpdateChecker'
 
 type AppShellProps = {
   children: ReactNode
@@ -206,6 +207,12 @@ function TopBar({ currentPath }: TopBarProps) {
       <div className="flex items-center gap-2">
         <Link to="/explore" className="hidden rounded-xl border border-blue-100 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-blue-50 sm:inline-flex">Find people</Link>
         <Link to="/?create=1" className="inline-flex items-center rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:from-blue-700 hover:to-indigo-700">+ Create</Link>
+      </div>
+      {/* Update checker shows a non-blocking banner when a newer Android APK is available. */}
+      <div className="mx-4 mt-2 lg:mx-0">
+        {/* Lazy load to keep bundle small; dynamic import avoids adding native-only deps. */}
+        {/* eslint-disable-next-line @typescript-eslint/no-var-requires */}
+        <UpdateChecker />
       </div>
     </header>
   )

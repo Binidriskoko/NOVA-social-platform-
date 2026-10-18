@@ -237,4 +237,27 @@ describe('product area gaps', () => {
       .toMatchObject({ roomJoin: true, room: `nova-live-${liveId}`, canPublish: false, canSubscribe: true });
     expect((await request(app).post(tokenPath).set('Cookie', outsider.auth)).status).toBe(403);
   });
+
+  it('requires an authorized live viewer for comments and deduplicates likes', async () => {
+    const host = await register('InteractionHost');
+    const viewer = await register('InteractionViewer');
+    const outsider = await register('InteractionOutsider');
+    const created = await request(app).post('/api/live/create').set('Cookie', host.auth).send({ title: 'Audience test' });
+    const liveId = created.body.live.id;
+    updateLiveSession(liveId, (live) => ({ ...live, status: 'live' }));
+
+    const blockedComment = await request(app).post(`/api/live/${liveId}/comment`).set('Cookie', outsider.auth).send({ text: 'I am not in the room.' });
+    expect(blockedComment.status).toBe(403);
+    const joined = await request(app).post(`/api/live/${liveId}/viewers/join`).set('Cookie', viewer.auth);
+    expect(joined.status).toBe(201);
+    const comment = await request(app).post(`/api/live/${liveId}/comment`).set('Cookie', viewer.auth).send({ text: 'Hello everyone.' });
+    expect(comment.status).toBe(201);
+    const firstLike = await request(app).post(`/api/live/${liveId}/react`).set('Cookie', viewer.auth).send({ type: 'LIKE' });
+    const duplicateLike = await request(app).post(`/api/live/${liveId}/react`).set('Cookie', viewer.auth).send({ type: 'LIKE' });
+    expect(firstLike.status).toBe(201);
+    expect(duplicateLike.status).toBe(200);
+    expect(duplicateLike.body.duplicate).toBe(true);
+    expect((await request(app).get(`/api/live/${liveId}`).set('Cookie', viewer.auth)).body.live.comments).toHaveLength(1);
+    expect((await request(app).post(`/api/live/${liveId}/viewers/leave`).set('Cookie', viewer.auth)).body.left).toBe(true);
+  });
 });

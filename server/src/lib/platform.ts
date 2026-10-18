@@ -197,8 +197,18 @@ export async function isNotificationEnabled(userId: string, type: string) {
   return (await getNotificationPreferences(userId)).find((preference) => preference.key === key)?.enabled ?? true;
 }
 
-export async function createNotification(recipientId: string, actorId: string | null, type: string, message: string) {
+export async function createNotification(
+  recipientId: string,
+  actorId: string | null,
+  type: string,
+  message: string,
+  options: { link?: string; dedupeKey?: string } = {},
+) {
   if (!(await isNotificationEnabled(recipientId, type))) return null;
+  if (options.dedupeKey) {
+    const livePreference = (await getNotificationPreferences(recipientId)).find((preference) => preference.key === 'live');
+    if (livePreference?.channel !== 'in_app') return null;
+  }
   const dbAvailable = await isDatabaseAvailable();
   const base = {
     id: buildNotificationId(),
@@ -206,24 +216,38 @@ export async function createNotification(recipientId: string, actorId: string | 
     actorId,
     type,
     message,
+    ...(options.link ? { link: options.link } : {}),
+    ...(options.dedupeKey ? { dedupeKey: options.dedupeKey } : {}),
     createdAt: new Date().toISOString(),
     readAt: null,
   };
 
   if (dbAvailable) {
-    const record = await prisma.notification.create({
-      data: {
-        recipientId,
-        actorId,
-        type,
-        message,
-      },
-    });
+    let record;
+    try {
+      record = await prisma.notification.create({
+        data: {
+          recipientId,
+          actorId,
+          type,
+          message,
+          ...options,
+        },
+      });
+    } catch (error) {
+      if (options.dedupeKey && typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002') {
+        return prisma.notification.findUnique({ where: { dedupeKey: options.dedupeKey } });
+      }
+      throw error;
+    }
 
     realtimeHub.emit('notification:new', { notification: record, allowedUserIds: [recipientId] });
     return record;
   }
 
+  if (options.dedupeKey && socialStore.state.notifications.some((notification) => notification.dedupeKey === options.dedupeKey)) {
+    return socialStore.state.notifications.find((notification) => notification.dedupeKey === options.dedupeKey) ?? null;
+  }
   socialStore.state.notifications.push(base);
   realtimeHub.emit('notification:new', { notification: base, allowedUserIds: [recipientId] });
   return base;

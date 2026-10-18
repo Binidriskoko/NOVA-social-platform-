@@ -176,6 +176,9 @@ model User {
   marketplaceDisputes      MarketplaceDispute[]      @relation("DisputeReporter")
   financialPaymentIntents  PaymentIntent[]           @relation("PaymentPayer")
   uploadedMedia            RegistrationMediaObject[]
+  liveReplays              LiveReplay[]
+  liveBroadcastComments    LiveBroadcastComment[]
+  liveBroadcastReactions   LiveBroadcastReaction[]
 
   @@index([email])
   @@index([phoneE164])
@@ -266,6 +269,7 @@ model Post {
   content     String
   imageUrl    String?
   visibility  PostVisibility @default(PUBLIC)
+  sourceLiveReplayId String? @unique
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
@@ -277,6 +281,8 @@ model Post {
   reports   Report[]
   saves     PostSave[]
   shares    PostShare[]
+  liveReplay       LiveReplay? @relation("ReplaySource", fields: [sourceLiveReplayId], references: [id], onDelete: SetNull)
+  publishedReplay  LiveReplay? @relation("ReplayPost")
 
   @@index([authorId])
   @@index([communityId])
@@ -560,6 +566,8 @@ model Notification {
   actorId     String?
   type        String
   message     String
+  link        String?
+  dedupeKey   String?   @unique
   readAt      DateTime?
   createdAt   DateTime  @default(now())
 
@@ -567,6 +575,50 @@ model Notification {
 
   @@index([recipientId, readAt])
   @@index([createdAt])
+}
+
+model LiveReplay {
+  id              String   @id
+  hostId          String
+  title           String
+  mediaUrl        String
+  contentType     String
+  durationSeconds Int
+  status          String   @default("READY")
+  publishedPostId String?  @unique
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  host          User  @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  sourcePost    Post? @relation("ReplaySource")
+  publishedPost Post? @relation("ReplayPost", fields: [publishedPostId], references: [id], onDelete: SetNull)
+
+  @@index([hostId, status, createdAt])
+}
+
+model LiveBroadcastComment {
+  id        String   @id @default(cuid())
+  liveId    String
+  userId    String
+  text      String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([liveId, createdAt])
+}
+
+model LiveBroadcastReaction {
+  id        String   @id @default(cuid())
+  liveId    String
+  userId    String
+  type      String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([liveId, userId, type])
+  @@index([liveId, createdAt])
 }
 
 model SubscriptionPlan {

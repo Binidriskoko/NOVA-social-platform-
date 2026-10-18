@@ -87,12 +87,118 @@ async function getSettings() {
 }
 
 async function getMeasurementReadiness() {
+  const settings = await getSettings();
   if (await isDatabaseAvailable()) {
-    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const cutoff = new Date(Date.now() - settings.qualifiedViewWindowDays * 24 * 60 * 60 * 1000);
     const yes = await prisma.videoMeasurement.findFirst({ where: { qualified: true, endedAt: { gte: cutoff } }, select: { id: true } });
     return Boolean(yes);
   }
   return false;
+}
+
+async function loadCreatorAnalytics() {
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const settings = await getSettings();
+  let measurements: Array<{ authorId: string; watchSeconds: number; qualified: boolean; active: boolean; endedAt: Date | string }> = [];
+  let creatorUsers = new Map<string, string>();
+  let pendingApplicationIds: string[] = [];
+
+  if (await isDatabaseAvailable()) {
+    const [rows, candidates, pending] = await Promise.all([
+      prisma.videoMeasurement.findMany({
+        where: { createdAt: { gte: cutoff } },
+        select: {
+          watchSeconds: true,
+          qualified: true,
+          active: true,
+          endedAt: true,
+          post: { select: { authorId: true } },
+        },
+      }),
+      prisma.user.findMany({
+        where: {
+          OR: [
+            { creatorProfile: { isNot: null } },
+            { creatorApplications: { some: {} } },
+            {
+              posts: {
+                some: {
+                  videoMeasurements: {
+                    some: { createdAt: { gte: cutoff } },
+                  },
+                },
+              },
+            },
+          ],
+        },
+        select: { id: true, name: true },
+      }),
+      prisma.creatorApplication.findMany({ where: { status: 'PENDING' }, select: { creatorId: true } }),
+    ]);
+    measurements = rows.map((row) => ({ ...row, authorId: row.post.authorId }));
+    creatorUsers = new Map(candidates.map((candidate) => [candidate.id, candidate.name]));
+    pendingApplicationIds = pending.map((application) => application.creatorId);
+  } else {
+    measurements = socialStore.state.videoMeasurements
+      .filter((measurement) => new Date(measurement.createdAt).getTime() >= cutoff.getTime())
+      .flatMap((measurement) => {
+        const post = socialStore.state.posts.find((candidate) => candidate.id === measurement.postId);
+        return post ? [{ ...measurement, authorId: post.authorId }] : [];
+      });
+    for (const application of commerceStore.state.creatorApplications) {
+      const creatorId = String(application.creatorId);
+      const user = fallbackStore.findById(creatorId);
+      if (user) creatorUsers.set(creatorId, user.name);
+      if (application.status === 'PENDING') pendingApplicationIds.push(creatorId);
+    }
+    for (const measurement of measurements) {
+      const user = fallbackStore.findById(measurement.authorId);
+      if (user) creatorUsers.set(measurement.authorId, user.name);
+    }
+  }
+
+  const perCreator = new Map<string, { totalViews: number; qualifiedViews: number; watchTimeSeconds: number }>();
+  for (const measurement of measurements) {
+    if (measurement.watchSeconds <= 0) continue;
+    const metrics = perCreator.get(measurement.authorId) ?? { totalViews: 0, qualifiedViews: 0, watchTimeSeconds: 0 };
+    metrics.totalViews += 1;
+    metrics.watchTimeSeconds += measurement.watchSeconds;
+    if (measurement.qualified && !measurement.active && new Date(measurement.endedAt).getTime() >= cutoff.getTime()) metrics.qualifiedViews += 1;
+    perCreator.set(measurement.authorId, metrics);
+  }
+  const creators = await Promise.all([...creatorUsers].map(async ([creatorId, creatorName]) => {
+    const eligibility = await getEligibility(creatorId);
+    const metrics = perCreator.get(creatorId) ?? { totalViews: 0, qualifiedViews: 0, watchTimeSeconds: 0 };
+    const pending = pendingApplicationIds.includes(creatorId);
+    return {
+      creatorId,
+      creatorName,
+      totalViews: metrics.totalViews,
+      qualifiedViews: metrics.qualifiedViews,
+      watchTimeSeconds: metrics.watchTimeSeconds,
+      eligible: Boolean(eligibility?.eligible),
+      applicationStatus: pending ? 'PENDING' : eligibility?.approved ? 'APPROVED' : 'NOT_APPLIED',
+    };
+  }));
+  const totalViews = creators.reduce((sum, creator) => sum + creator.totalViews, 0);
+  const qualifiedViews = creators.reduce((sum, creator) => sum + creator.qualifiedViews, 0);
+  const totalWatchTimeSeconds = creators.reduce((sum, creator) => sum + creator.watchTimeSeconds, 0);
+  return {
+    metrics: {
+      totalVideoViews: totalViews,
+      qualifiedViews,
+      totalWatchTimeSeconds,
+      eligibleCreators: creators.filter((creator) => creator.eligible).length,
+      pendingCreators: new Set(pendingApplicationIds).size,
+    },
+    creators: creators.sort((left, right) => right.totalViews - left.totalViews || left.creatorName.localeCompare(right.creatorName)),
+    measurementAvailable: qualifiedViews > 0,
+    reportingWindowDays: 30,
+    qualificationWindowDays: settings.qualifiedViewWindowDays,
+    qualificationMinimumWatchSeconds: settings.minimumWatchTimeSeconds,
+    revenueSharePercent: settings.revenueSharePercent,
+    lastUpdatedAt: new Date().toISOString(),
+  };
 }
 
 async function getCreatorMeasurementMetrics(userId: string, settings: Awaited<ReturnType<typeof getSettings>>) {
@@ -262,6 +368,10 @@ router.post('/creators/me/monetization/applications', requireAuth, async (req, r
 router.get('/admin/monetization/settings', ...admin, async (_req, res) => {
   const settings = await getSettings();
   res.json({ settings, measurementReady: await getMeasurementReadiness() });
+});
+
+router.get('/admin/creator-analytics', ...admin, async (_req, res) => {
+  return res.json({ analytics: await loadCreatorAnalytics() });
 });
 
 router.post('/monetization/video-views/start', requireAuth, async (req, res) => {

@@ -8,9 +8,12 @@ import { findUserById } from '../lib/fallbackStore.js';
 import { prisma, isDatabaseAvailable } from '../lib/prisma.js';
 import { reviewContentForSafety } from '../lib/moderation.js';
 import { callRoomName, createLiveKitToken, getLiveKitParticipants, isLiveKitConfigured, liveKitUrl, liveRoomName } from '../lib/livekit.js';
+import { getMediaStorage, uploadedVideoBelongsTo, videoMediaKeyFromUrl } from '../lib/mediaStorage.js';
+import { reviewContentForSafety as reviewPostContentForSafety } from '../lib/moderation.js';
 
 const command2aRouter = Router();
 command2aRouter.use(requireActiveAccountIfAuthenticated);
+const startingLiveIds = new Set<string>();
 
 const notificationPreferenceSchema = z.object({
   key: z.enum(['social', 'messages', 'security', 'live', 'calls', 'mentions']),
@@ -84,6 +87,88 @@ function isCallParticipant(call: NonNullable<ReturnType<typeof getCallSession>>,
 
 function canManageLive(live: NonNullable<ReturnType<typeof getLiveSession>>, userId: string) {
   return live.hostId === userId || live.moderators.includes(userId);
+}
+
+async function canInteractWithLive(live: NonNullable<ReturnType<typeof getLiveSession>>, userId: string) {
+  if (canManageLive(live, userId)) return !(await isBlocked(userId, live.hostId));
+  if (live.visibility === 'private' || !live.viewers.some((viewer) => viewer.userId === userId && !viewer.isBlocked)) return false;
+  return !(await isBlocked(userId, live.hostId));
+}
+
+async function presentLive(live: NonNullable<ReturnType<typeof getLiveSession>>) {
+  const databaseAvailable = await isDatabaseAvailable();
+  const host = await (databaseAvailable
+    ? prisma.user.findUnique({ where: { id: live.hostId }, select: { name: true, profile: { select: { avatarUrl: true } } } })
+    : Promise.resolve(findUserById(live.hostId)));
+  const comments = databaseAvailable
+    ? (await prisma.liveBroadcastComment.findMany({
+      where: { liveId: live.id },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    })).reverse().map((comment) => ({ id: comment.id, userId: comment.userId, text: comment.text, createdAt: comment.createdAt.toISOString() }))
+    : live.comments;
+  return {
+    ...live,
+    comments,
+    host: host ? { name: host.name, avatar: 'profile' in host ? host.profile?.avatarUrl ?? null : null } : null,
+  };
+}
+
+async function notifyLiveAudience(liveId: string, hostId: string, hostName: string, title: string) {
+  const audienceIds = new Set<string>();
+  if (await isDatabaseAvailable()) {
+    const follows = await prisma.follow.findMany({
+      where: { OR: [{ followingId: hostId }, { followerId: hostId }] },
+      select: { followerId: true, followingId: true },
+    });
+    for (const follow of follows) {
+      const userId = follow.followerId === hostId ? follow.followingId : follow.followerId;
+      if (userId !== hostId) audienceIds.add(userId);
+    }
+    if (!audienceIds.size) return;
+    const recipients = await prisma.user.findMany({
+      where: { id: { in: [...audienceIds] }, status: 'ACTIVE' },
+      select: { id: true },
+    });
+    const eligibleIds = new Set(recipients.map((recipient) => recipient.id));
+    const blocks = await prisma.block.findMany({
+      where: {
+        OR: [
+          { blockerId: hostId, blockedId: { in: [...eligibleIds] } },
+          { blockerId: { in: [...eligibleIds] }, blockedId: hostId },
+        ],
+      },
+      select: { blockerId: true, blockedId: true },
+    });
+    for (const block of blocks) eligibleIds.delete(block.blockerId === hostId ? block.blockedId : block.blockerId);
+    await Promise.all([...eligibleIds].map((recipientId) => createNotification(
+      recipientId,
+      hostId,
+      'live_started',
+      `${hostName} is live now: ${title}`,
+      { link: `/live?live=${encodeURIComponent(liveId)}`, dedupeKey: `live_started:${liveId}:${recipientId}` },
+    )));
+    return;
+  }
+
+  for (const follow of socialStore.state.follows) {
+    if (follow.followerId === hostId) audienceIds.add(follow.followingId);
+    if (follow.followingId === hostId) audienceIds.add(follow.followerId);
+  }
+  await Promise.all([...audienceIds].filter((recipientId) => {
+    const recipient = findUserById(recipientId);
+    return recipient && recipientId !== hostId && recipient.status !== 'SUSPENDED' && recipient.status !== 'BANNED'
+      && !socialStore.state.blocks.some((block) =>
+        (block.blockerId === hostId && block.blockedId === recipientId)
+        || (block.blockerId === recipientId && block.blockedId === hostId),
+      );
+  }).map((recipientId) => createNotification(
+    recipientId,
+    hostId,
+    'live_started',
+    `${hostName} is live now: ${title}`,
+    { link: `/live?live=${encodeURIComponent(liveId)}`, dedupeKey: `live_started:${liveId}:${recipientId}` },
+  )));
 }
 
 command2aRouter.get('/notifications', requireAuth, async (req, res) => {
@@ -380,8 +465,23 @@ command2aRouter.post('/live/create', requireAuth, async (req, res) => {
 });
 
 command2aRouter.get('/live', requireAuth, async (req, res) => {
-  const lives = listLiveSessions().filter((live) => live.visibility === 'public' || canManageLive(live, req.user!.id) || live.viewers.some((viewer) => viewer.userId === req.user!.id));
-  return res.json({ lives });
+  const cutoff = Date.now() - 60_000;
+  const lives = listLiveSessions().map((live) => {
+    if (live.status !== 'live') return live;
+    const viewers = live.viewers.filter((viewer) => new Date(viewer.joinedAt).getTime() >= cutoff);
+    if (viewers.length === live.viewers.length) return live;
+    return updateLiveSession(live.id, (session) => ({ ...session, viewers, viewerCount: viewers.length })) ?? live;
+  }).filter((live) => live.visibility === 'public' || canManageLive(live, req.user!.id) || live.viewers.some((viewer) => viewer.userId === req.user!.id));
+  return res.json({ lives: await Promise.all(lives.map(presentLive)) });
+});
+
+command2aRouter.get('/live/replays', requireAuth, async (req, res) => {
+  if (!(await isDatabaseAvailable())) return res.status(503).json({ message: 'Persistent replay storage is unavailable.' });
+  const replays = await prisma.liveReplay.findMany({
+    where: { hostId: req.user!.id, status: { in: ['READY', 'PUBLISHED'] } },
+    orderBy: { createdAt: 'desc' },
+  });
+  return res.json({ replays });
 });
 
 command2aRouter.get('/live/:id', requireAuth, async (req, res) => {
@@ -392,7 +492,7 @@ command2aRouter.get('/live/:id', requireAuth, async (req, res) => {
   if (live.visibility === 'private' && !canManageLive(live, req.user!.id) && !live.viewers.some((viewer) => viewer.userId === req.user!.id)) {
     return res.status(404).json({ message: 'Live session not found.' });
   }
-  return res.json({ live });
+  return res.json({ live: await presentLive(live) });
 });
 
 command2aRouter.post('/live/:id/start', requireAuth, async (req, res) => {
@@ -400,20 +500,46 @@ command2aRouter.post('/live/:id/start', requireAuth, async (req, res) => {
   if (!live) return res.status(404).json({ message: 'Live session not found.' });
   if (live.hostId !== req.user!.id) return res.status(403).json({ message: 'Only the host can start this live session.' });
   if (!isLiveKitConfigured()) return res.status(503).json({ message: 'Live broadcasts are unavailable because LiveKit is not configured.' });
-  if (live.status !== 'paused') return res.status(409).json({ message: 'This live session cannot be started in its current state.' });
-  let host = null;
+  if (live.status === 'live') {
+    let notificationWarning = false;
+    if (live.visibility === 'public') {
+      try {
+        await notifyLiveAudience(live.id, live.hostId, req.user!.name, live.title);
+      } catch {
+        notificationWarning = true;
+      }
+    }
+    return res.json({ live, message: 'Live session is already running.', notificationWarning });
+  }
+  if (live.status !== 'paused' || startingLiveIds.has(live.id)) return res.status(409).json({ message: 'This live session cannot be started in its current state.' });
+  startingLiveIds.add(live.id);
   try {
-    const participants = await getLiveKitParticipants(liveRoomName(live.id));
-    host = participants.find((participant) => participant.identity === live.hostId);
-  } catch {
-    return res.status(503).json({ message: 'LiveKit could not verify the host broadcast.' });
+    let participants;
+    try {
+      participants = await getLiveKitParticipants(liveRoomName(live.id));
+    } catch {
+      return res.status(503).json({ message: 'LiveKit could not verify the host broadcast.' });
+    }
+    const host = participants.find((participant) => participant.identity === live.hostId);
+    const publishedSources = new Set(host?.tracks.filter((track) => !track.muted).map((track) => track.source) ?? []);
+    if (!publishedSources.has(TrackSource.CAMERA) || !publishedSources.has(TrackSource.MICROPHONE)) {
+      return res.status(409).json({ message: 'The host camera and microphone must be published before starting the live session.' });
+    }
+    const latest = getLiveSession(live.id);
+    if (!latest || latest.status !== 'paused') return res.status(409).json({ message: 'This live session cannot be started in its current state.' });
+    const next = updateLiveSession(live.id, (session) => ({ ...session, status: 'live', viewerCount: Math.max(0, session.viewerCount) }));
+    let notificationWarning = false;
+    if (next?.visibility === 'public') {
+      try {
+        await notifyLiveAudience(next.id, next.hostId, req.user!.name, next.title);
+      } catch {
+        notificationWarning = true;
+      }
+    }
+    return res.json({ live: next, message: 'Live session started.', notificationWarning });
+  } finally {
+    startingLiveIds.delete(live.id);
   }
-  const publishedSources = new Set(host?.tracks.filter((track) => !track.muted).map((track) => track.source) ?? []);
-  if (!publishedSources.has(TrackSource.CAMERA) || !publishedSources.has(TrackSource.MICROPHONE)) {
-    return res.status(409).json({ message: 'The host camera and microphone must be published before starting the live session.' });
-  }
-  const next = updateLiveSession(live.id, (session) => ({ ...session, status: 'live', viewerCount: Math.max(0, session.viewerCount) }));
-  return res.json({ live: next, message: 'Live session started.' });
 });
 
 command2aRouter.post('/live/:id/token', requireAuth, async (req, res) => {
@@ -447,36 +573,180 @@ command2aRouter.post('/live/:id/end', requireAuth, async (req, res) => {
   const live = getLiveSession(String(req.params.id));
   if (!live) return res.status(404).json({ message: 'Live session not found.' });
   if (live.hostId !== req.user!.id) return res.status(403).json({ message: 'Only the host can end this live session.' });
+  if (live.status === 'ended') return res.json({ live, message: 'Live session already ended.' });
   const next = updateLiveSession(live.id, (session) => ({ ...session, status: 'ended' }));
   return res.json({ live: next, message: 'Live session ended.' });
+});
+
+const liveReplaySchema = z.object({
+  mediaUrl: z.string().trim().min(1).max(1000),
+  contentType: z.enum(['video/mp4', 'video/webm', 'video/ogg']),
+  durationSeconds: z.number().int().min(1).max(86_400),
+}).strict();
+
+command2aRouter.post('/live/:id/replay', requireAuth, async (req, res) => {
+  const live = getLiveSession(String(req.params.id));
+  if (!live) return res.status(404).json({ message: 'Live session not found.' });
+  if (live.hostId !== req.user!.id) return res.status(403).json({ message: 'Only the host can save a live replay.' });
+  if (live.status !== 'live' || live.recordingStatus !== 'RECORDING') return res.status(409).json({ message: 'A recording must be active before its replay can be saved.' });
+  const parsed = liveReplaySchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ message: 'Invalid live replay upload.', errors: parsed.error.flatten() });
+  if (!(await uploadedVideoBelongsTo(parsed.data.mediaUrl, req.user!.id, process.env.NODE_ENV ?? 'development'))) {
+    return res.status(400).json({ message: 'The replay must be a video uploaded by this account.' });
+  }
+  if (!(await isDatabaseAvailable())) return res.status(503).json({ message: 'Persistent replay storage is unavailable; this recording cannot be marked ready.' });
+  const existing = await prisma.liveReplay.findUnique({ where: { id: live.id } });
+  if (existing && existing.status !== 'DELETED') return res.status(409).json({ message: 'A replay has already been saved for this broadcast.' });
+  const replay = await prisma.liveReplay.upsert({
+    where: { id: live.id },
+    create: {
+      id: live.id,
+      hostId: req.user!.id,
+      title: live.title,
+      mediaUrl: parsed.data.mediaUrl,
+      contentType: parsed.data.contentType,
+      durationSeconds: parsed.data.durationSeconds,
+    },
+    update: {
+      mediaUrl: parsed.data.mediaUrl,
+      contentType: parsed.data.contentType,
+      durationSeconds: parsed.data.durationSeconds,
+      status: 'READY',
+      publishedPostId: null,
+    },
+  });
+  const next = updateLiveSession(live.id, (session) => ({ ...session, recordingStatus: 'READY', replayUrl: replay.mediaUrl, recordingUrl: replay.mediaUrl }));
+  return res.status(201).json({ replay, live: next });
+});
+
+const publishLiveReplaySchema = z.object({
+  content: z.string().trim().max(2500).optional(),
+  visibility: z.enum(['PUBLIC', 'FOLLOWERS', 'PRIVATE']).default('PUBLIC'),
+}).strict();
+
+command2aRouter.post('/live/:id/replay/publish', requireAuth, async (req, res) => {
+  if (!(await isDatabaseAvailable())) return res.status(503).json({ message: 'Persistent replay publishing is unavailable.' });
+  const parsed = publishLiveReplaySchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ message: 'Invalid replay post details.', errors: parsed.error.flatten() });
+  const replay = await prisma.liveReplay.findUnique({ where: { id: String(req.params.id) } });
+  if (!replay) return res.status(404).json({ message: 'Live replay not found.' });
+  if (replay.hostId !== req.user!.id) return res.status(403).json({ message: 'Only the host can publish this replay.' });
+  if (replay.status === 'PUBLISHED' && replay.publishedPostId) {
+    const post = await prisma.post.findUnique({ where: { id: replay.publishedPostId } });
+    if (post) return res.json({ replay, post, duplicate: true });
+  }
+  if (replay.status !== 'READY') return res.status(409).json({ message: 'This replay is not available for publishing.' });
+  if (!(await uploadedVideoBelongsTo(replay.mediaUrl, req.user!.id, process.env.NODE_ENV ?? 'development'))) {
+    return res.status(409).json({ message: 'The stored replay media is no longer available to this account.' });
+  }
+  const content = parsed.data.content || replay.title;
+  const moderation = reviewPostContentForSafety({ type: 'post', text: content, userId: req.user!.id });
+  if (moderation === 'REMOVE') return res.status(400).json({ message: 'This replay post violates NOVA Community & Safety Rules.' });
+  if (moderation === 'REVIEW') return res.status(422).json({ message: 'This replay post requires moderator review.' });
+  try {
+    const result = await prisma.$transaction(async (transaction) => {
+      const current = await transaction.liveReplay.findUnique({ where: { id: replay.id } });
+      if (!current || current.status !== 'READY' || current.hostId !== req.user!.id) {
+        throw new Error('Replay is no longer available for publishing.');
+      }
+      const post = await transaction.post.create({
+        data: {
+          authorId: req.user!.id,
+          content,
+          imageUrl: current.mediaUrl,
+          visibility: parsed.data.visibility,
+          sourceLiveReplayId: current.id,
+        },
+      });
+      const published = await transaction.liveReplay.update({
+        where: { id: current.id },
+        data: { status: 'PUBLISHED', publishedPostId: post.id },
+      });
+      return { replay: published, post };
+    });
+    return res.status(201).json({ ...result, duplicate: false });
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002') {
+      const published = await prisma.liveReplay.findUnique({ where: { id: replay.id } });
+      if (published?.publishedPostId) {
+        const post = await prisma.post.findUnique({ where: { id: published.publishedPostId } });
+        if (post) return res.json({ replay: published, post, duplicate: true });
+      }
+    }
+    throw error;
+  }
+});
+
+command2aRouter.delete('/live/:id/replay', requireAuth, async (req, res) => {
+  if (!(await isDatabaseAvailable())) return res.status(503).json({ message: 'Persistent replay storage is unavailable.' });
+  const replay = await prisma.liveReplay.findUnique({ where: { id: String(req.params.id) } });
+  if (!replay) return res.status(404).json({ message: 'Live replay not found.' });
+  if (replay.hostId !== req.user!.id) return res.status(403).json({ message: 'Only the host can delete this replay.' });
+  if (!['READY', 'DELETING'].includes(replay.status)) return res.status(409).json({ message: 'Only an unpublished replay can be deleted.' });
+  const key = videoMediaKeyFromUrl(replay.mediaUrl);
+  if (!key || !(await uploadedVideoBelongsTo(replay.mediaUrl, req.user!.id, process.env.NODE_ENV ?? 'development'))) {
+    return res.status(409).json({ message: 'The replay media could not be verified for safe deletion.' });
+  }
+  await prisma.liveReplay.update({ where: { id: replay.id }, data: { status: 'DELETING' } });
+  await getMediaStorage(process.env.NODE_ENV ?? 'development').delete(key);
+  const deleted = await prisma.liveReplay.update({ where: { id: replay.id }, data: { status: 'DELETED' } });
+  return res.json({ deleted: true, replay: deleted });
 });
 
 command2aRouter.post('/live/:id/comment', requireAuth, async (req, res) => {
   const live = getLiveSession(String(req.params.id));
   if (!live) return res.status(404).json({ message: 'Live session not found.' });
   if (live.status !== 'live') return res.status(409).json({ message: 'Comments are available while the live session is running.' });
-  if (await isBlocked(req.user!.id, live.hostId)) return res.status(403).json({ message: 'You cannot interact with this live session.' });
+  if (!(await canInteractWithLive(live, req.user!.id))) return res.status(403).json({ message: 'Join this live session and meet its audience permissions to comment.' });
   const payload = liveCommentSchema.parse(req.body ?? {});
   const moderation = reviewContentForSafety({ type: 'comment', text: payload.text, userId: req.user!.id });
   if (moderation === 'REMOVE') return res.status(400).json({ message: 'This comment violates NOVA Community & Safety Rules.' });
   if (moderation === 'REVIEW') return res.status(422).json({ message: 'This comment requires moderator review.' });
+  const comment = await (await isDatabaseAvailable()
+    ? prisma.liveBroadcastComment.create({ data: { liveId: live.id, userId: req.user!.id, text: payload.text } })
+    : Promise.resolve({ id: `live_comment_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, liveId: live.id, userId: req.user!.id, text: payload.text, createdAt: new Date() }));
+  const liveComment = { id: comment.id, userId: comment.userId, text: comment.text, createdAt: comment.createdAt.toISOString() };
   const next = updateLiveSession(live.id, (session) => ({
     ...session,
-    comments: [...session.comments, { id: `live_comment_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, userId: req.user!.id, text: payload.text, createdAt: new Date().toISOString() }],
+    comments: [...session.comments, liveComment],
   }));
-  return res.status(201).json({ comment: next!.comments[next!.comments.length - 1] });
+  return res.status(201).json({ comment: liveComment, live: next && await presentLive(next) });
 });
 
 command2aRouter.post('/live/:id/react', requireAuth, async (req, res) => {
   const live = getLiveSession(String(req.params.id));
   if (!live) return res.status(404).json({ message: 'Live session not found.' });
   if (live.status !== 'live') return res.status(409).json({ message: 'Reactions are available while the live session is running.' });
+  if (!(await canInteractWithLive(live, req.user!.id))) return res.status(403).json({ message: 'Join this live session and meet its audience permissions to react.' });
   const payload = liveReactionSchema.parse(req.body ?? {});
+  if (await isDatabaseAvailable()) {
+    const where = { liveId_userId_type: { liveId: live.id, userId: req.user!.id, type: payload.type } };
+    const existingInDatabase = await prisma.liveBroadcastReaction.findUnique({ where });
+    if (existingInDatabase) return res.json({ reaction: existingInDatabase, duplicate: true });
+    try {
+      const reaction = await prisma.liveBroadcastReaction.create({ data: { liveId: live.id, userId: req.user!.id, type: payload.type } });
+      updateLiveSession(live.id, (session) => ({
+        ...session,
+        reactions: session.reactions.some((entry) => entry.userId === req.user!.id && entry.type === payload.type)
+          ? session.reactions
+          : [...session.reactions, { id: reaction.id, userId: req.user!.id, type: payload.type, createdAt: reaction.createdAt.toISOString() }],
+      }));
+      return res.status(201).json({ reaction, duplicate: false });
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002') {
+        const duplicate = await prisma.liveBroadcastReaction.findUnique({ where });
+        if (duplicate) return res.json({ reaction: duplicate, duplicate: true });
+      }
+      throw error;
+    }
+  }
+  const existing = live.reactions.find((reaction) => reaction.userId === req.user!.id && reaction.type === payload.type);
+  if (existing) return res.json({ reaction: existing, duplicate: true });
   const next = updateLiveSession(live.id, (session) => ({
     ...session,
     reactions: [...session.reactions, { id: `live_reaction_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, userId: req.user!.id, type: payload.type, createdAt: new Date().toISOString() }],
   }));
-  return res.status(201).json({ reaction: next!.reactions[next!.reactions.length - 1] });
+  return res.status(201).json({ reaction: next!.reactions[next!.reactions.length - 1], duplicate: false });
 });
 
 command2aRouter.post('/live/:id/viewer/:userId/remove', requireAuth, async (req, res) => {
@@ -542,11 +812,31 @@ command2aRouter.post('/live/:id/viewers/join', requireAuth, async (req, res) => 
   if (live.visibility === 'private' && !canManageLive(live, req.user!.id)) return res.status(403).json({ message: 'This live session is private.' });
   if (await isBlocked(req.user!.id, live.hostId)) return res.status(403).json({ message: 'You cannot join this live session.' });
   const existing = live.viewers.find((viewer) => viewer.userId === req.user!.id);
-  if (existing) return res.json({ viewer: existing, live });
-  const viewer = { userId: req.user!.id, isMuted: false, isBlocked: false, joinedAt: new Date().toISOString() };
-  const next = updateLiveSession(live.id, (session) => ({ ...session, viewers: [...session.viewers, viewer], viewerCount: session.viewers.length + 1 }));
+  const viewer = { ...(existing ?? { userId: req.user!.id, isMuted: false, isBlocked: false }), joinedAt: new Date().toISOString() };
+  const next = updateLiveSession(live.id, (session) => ({
+    ...session,
+    viewers: [...session.viewers.filter((entry) => entry.userId !== viewer.userId), viewer],
+    viewerCount: new Set([...session.viewers.map((entry) => entry.userId), viewer.userId]).size,
+  }));
+  if (existing) return res.json({ viewer, live: next });
   await createNotification(live.hostId, req.user!.id, 'live_viewer', `${req.user!.name} joined your live session.`);
   return res.status(201).json({ viewer, live: next });
+});
+
+command2aRouter.post('/live/:id/viewers/heartbeat', requireAuth, async (req, res) => {
+  const live = getLiveSession(String(req.params.id));
+  if (!live) return res.status(404).json({ message: 'Live session not found.' });
+  if (live.status !== 'live') return res.status(409).json({ message: 'This live session is not running.' });
+  const viewer = live.viewers.find((entry) => entry.userId === req.user!.id && !entry.isBlocked);
+  if (!viewer) return res.status(409).json({ message: 'Join this live session again to continue watching.' });
+  if (await isBlocked(req.user!.id, live.hostId)) return res.status(403).json({ message: 'You cannot watch this live session.' });
+  const updatedViewer = { ...viewer, joinedAt: new Date().toISOString() };
+  const next = updateLiveSession(live.id, (session) => ({
+    ...session,
+    viewers: session.viewers.map((entry) => entry.userId === req.user!.id ? updatedViewer : entry),
+    viewerCount: session.viewers.length,
+  }));
+  return res.json({ live: next });
 });
 
 command2aRouter.post('/live/:id/viewers/leave', requireAuth, async (req, res) => {
@@ -666,7 +956,7 @@ command2aRouter.post('/live/:id/recording/stop', requireAuth, async (req, res) =
   if (!live) return res.status(404).json({ message: 'Live session not found.' });
   if (!canManageLive(live, req.user!.id)) return res.status(403).json({ message: 'Only the host or a moderator can control recording.' });
   if (live.recordingStatus !== 'RECORDING') return res.status(409).json({ message: 'No recording is active.' });
-  const next = updateLiveSession(live.id, (session) => ({ ...session, recordingStatus: session.providerConfigured ? 'READY' : 'UNAVAILABLE' }));
+  const next = updateLiveSession(live.id, (session) => ({ ...session, recordingStatus: session.replayUrl ? 'READY' : 'UNAVAILABLE' }));
   return res.json({ live: next, replayReady: Boolean(next?.replayUrl) });
 });
 

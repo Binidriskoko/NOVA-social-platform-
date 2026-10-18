@@ -1,7 +1,6 @@
 import { ArrowRight, ChevronLeft, ChevronRight, Plus, Send, X } from 'lucide-react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Fragment, useEffect, useState } from 'react'
-import { PostComposer } from '../components/PostComposer'
 import { PostCard } from '../components/PostCard'
 import { FeedAdSlot } from '../components/FeedAdSlot'
 import { Avatar } from '../components/ui/Avatar'
@@ -61,10 +60,7 @@ export function HomePage() {
   const [storyReplyError, setStoryReplyError] = useState('')
   const [storyReplyNotice, setStoryReplyNotice] = useState('')
   const [storyViewerError, setStoryViewerError] = useState('')
-  const [showPostComposer, setShowPostComposer] = useState(false)
-  const [searchParams, setSearchParams] = useSearchParams()
-  const hasCreateQuery = searchParams.get('create') === '1'
-  const postComposerOpen = showPostComposer || hasCreateQuery
+  const navigate = useNavigate()
 
   const loadFeed = async () => {
     setLoading(true)
@@ -85,15 +81,6 @@ export function HomePage() {
     if (loading || !window.location.hash.startsWith('#post-')) return
     document.getElementById(window.location.hash.slice(1))?.scrollIntoView({ block: 'start' })
   }, [loading, posts])
-
-  const closePostComposer = () => {
-    setShowPostComposer(false)
-    if (hasCreateQuery) {
-      const nextParams = new URLSearchParams(searchParams)
-      nextParams.delete('create')
-      setSearchParams(nextParams, { replace: true })
-    }
-  }
 
   const loadStories = async () => {
     try {
@@ -365,14 +352,14 @@ export function HomePage() {
               <div className="flex items-center gap-3">
                 <button
                   type="button"
-                  onClick={() => setShowPostComposer(true)}
+                  onClick={() => navigate('/create')}
                   className="flex min-w-0 flex-1 items-center rounded-full bg-slate-100 px-4 py-3 text-left text-sm text-slate-500 hover:bg-slate-200"
                 >
                   What&apos;s on your mind?
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowPostComposer(true)}
+                  onClick={() => navigate('/create')}
                   className="hidden shrink-0 rounded-full bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white sm:inline-flex"
                 >
                   <Plus className="mr-1 h-4 w-4" aria-hidden="true" />
@@ -381,19 +368,17 @@ export function HomePage() {
               </div>
 
               <div className="mt-3 grid grid-cols-3 border-t border-slate-100 pt-3">
-                <button type="button" onClick={() => setShowPostComposer(true)} className="py-2 text-center text-xs font-semibold text-slate-600 hover:bg-slate-50">
+                <button type="button" onClick={() => navigate('/create')} className="py-2 text-center text-xs font-semibold text-slate-600 hover:bg-slate-50">
                   Photo / Video
                 </button>
                 <Link to="/live" className="py-2 text-center text-xs font-semibold text-slate-600 hover:bg-slate-50">
                   Live
                 </Link>
-                <button type="button" onClick={() => setShowPostComposer(true)} className="py-2 text-center text-xs font-semibold text-slate-600 hover:bg-slate-50">
+                <button type="button" onClick={() => navigate('/create')} className="py-2 text-center text-xs font-semibold text-slate-600 hover:bg-slate-50">
                   Create Post
                 </button>
               </div>
             </div>
-
-            {postComposerOpen ? <PostComposer inline onClose={closePostComposer} onPublished={() => { closePostComposer(); void loadFeed() }} /> : null}
 
             <div className="mb-3 flex items-center justify-between">
               <div>
@@ -440,7 +425,7 @@ export function HomePage() {
               <div className="rounded-2xl bg-white p-8 text-center shadow-sm ring-1 ring-slate-200">
                 <p className="font-semibold text-slate-800">Your feed starts here</p>
                 <p className="mt-1 text-sm text-slate-500">Create your first post or discover people to follow.</p>
-                <button type="button" onClick={() => setShowPostComposer(true)} className="mt-4 inline-flex items-center gap-2 rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white">
+                <button type="button" onClick={() => navigate('/create')} className="mt-4 inline-flex items-center gap-2 rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white">
                   Create a post
                   <Plus className="h-4 w-4" aria-hidden="true" />
                 </button>

@@ -339,4 +339,57 @@ describe('creator monetization and internal advertising', () => {
     expect(paid.status).toBe(409);
     expect(commerceStore.state.creatorPayouts.find((entry) => entry.id === payout.body.payout.id)?.status).toBe('PROCESSING');
   });
+
+  it('reports persisted playback sessions separately from qualified views and protects analytics with admin RBAC', async () => {
+    const creator = await register('AnalyticsCreator');
+    const viewer = await register('AnalyticsViewer');
+    const admin = await register('AnalyticsAdmin');
+    fallbackStore.updateUser(admin.user.id, { role: 'ADMIN' });
+    const post = await request(app).post('/api/posts').set('Cookie', creator.auth).send({
+      content: 'Analytics video',
+      imageUrl: 'https://cdn.example.test/analytics.mp4',
+      visibility: 'PUBLIC',
+    });
+    expect(post.status).toBe(201);
+
+    const now = new Date().toISOString();
+    for (const [sessionId, watchSeconds, qualified] of [
+      ['analytics-qualified', 45, true],
+      ['analytics-unqualified', 12, false],
+    ] as const) {
+      socialStore.state.videoMeasurements.push({
+        id: `measurement-${sessionId}`,
+        postId: post.body.post.id,
+        viewerId: viewer.user.id,
+        sessionId,
+        source: 'videos',
+        watchSeconds,
+        durationSeconds: 120,
+        lastPositionSeconds: watchSeconds,
+        lastHeartbeatAt: now,
+        active: false,
+        startedAt: now,
+        endedAt: now,
+        qualified,
+        createdAt: now,
+      });
+    }
+
+    expect((await request(app).get('/api/admin/creator-analytics')).status).toBe(401);
+    expect((await request(app).get('/api/admin/creator-analytics').set('Cookie', viewer.auth)).status).toBe(403);
+    const response = await request(app).get('/api/admin/creator-analytics').set('Cookie', admin.auth);
+    expect(response.status).toBe(200);
+    expect(response.body.analytics.metrics).toMatchObject({
+      totalVideoViews: 2,
+      qualifiedViews: 1,
+      totalWatchTimeSeconds: 57,
+      pendingCreators: 0,
+    });
+    expect(response.body.analytics.creators).toContainEqual(expect.objectContaining({
+      creatorId: creator.user.id,
+      totalViews: 2,
+      qualifiedViews: 1,
+      watchTimeSeconds: 57,
+    }));
+  });
 });

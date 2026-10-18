@@ -18,6 +18,7 @@ import { VideosPage } from './pages/VideosPage'
 import { CompleteProfilePage } from './pages/CompleteProfilePage'
 import { CreatorMonetizationPage } from './pages/CreatorMonetizationPage'
 import { AdCampaignsPage } from './pages/AdCampaignsPage'
+import { CreatePage } from './pages/CreatePage'
 
 const LivePage = lazy(() => import('./pages/LivePage').then(({ LivePage: page }) => ({ default: page })))
 const CallsPage = lazy(() => import('./pages/CallsPage').then(({ CallsPage: page }) => ({ default: page })))
@@ -85,7 +86,7 @@ function AppRoutes() {
         <Route path="/complete-profile" element={<CompleteProfilePage />} />
         <Route path="/" element={<AppShell><HomePage /></AppShell>} />
         <Route path="/explore" element={<AppShell><ExplorePage /></AppShell>} />
-        <Route path="/create" element={<Navigate to="/?create=1" replace />} />
+        <Route path="/create" element={<AppShell><CreatePage /></AppShell>} />
         <Route path="/videos" element={<AppShell><VideosPage /></AppShell>} />
         <Route path="/notifications" element={<AppShell><NotificationsPage /></AppShell>} />
         <Route path="/messages" element={<AppShell><MessagesPage /></AppShell>} />

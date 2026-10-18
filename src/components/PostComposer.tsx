@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { Image, ShieldAlert, Video, X } from 'lucide-react'
+import { Camera, Image, Radio, ShieldAlert, Video, X } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { apiRequest, uploadMedia, uploadVideo } from '../lib/api'
 import { postMediaFileType, validatePostMediaFile } from '../lib/postMedia'
+import { useAuth } from '../context/AuthContext'
+import { Avatar } from './ui/Avatar'
 import { Button } from './ui/Button'
 
 type PostComposerProps = {
@@ -13,6 +16,7 @@ type PostComposerProps = {
 type Visibility = 'PUBLIC' | 'FOLLOWERS' | 'PRIVATE'
 
 export function PostComposer({ onClose, onPublished, inline = false }: PostComposerProps) {
+  const { user } = useAuth()
   const [content, setContent] = useState('')
   const [mediaUrl, setMediaUrl] = useState('')
   const [mediaFile, setMediaFile] = useState<File | null>(null)
@@ -22,12 +26,25 @@ export function PostComposer({ onClose, onPublished, inline = false }: PostCompo
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [previewUrl, setPreviewUrl] = useState('')
+  const [profileAvatar, setProfileAvatar] = useState('')
+  const [profileError, setProfileError] = useState('')
   const previewUrlRef = useRef('')
   const selectedMedia = mediaFile ? postMediaFileType(mediaFile) : null
 
   useEffect(() => () => {
     if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
   }, [])
+
+  useEffect(() => {
+    if (!user?.id) return
+    let active = true
+    apiRequest<{ user: { profile?: { avatarUrl?: string | null } } }>(`/api/users/${encodeURIComponent(user.id)}`)
+      .then(({ user: profile }) => { if (active) setProfileAvatar(profile.profile?.avatarUrl ?? '') })
+      .catch((loadError: unknown) => {
+        if (active) setProfileError(loadError instanceof Error ? 'Your profile photo could not be loaded.' : 'Your profile details could not be loaded.')
+      })
+    return () => { active = false }
+  }, [user?.id])
 
   const setMediaPreview = (file?: File) => {
     if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
@@ -104,18 +121,33 @@ export function PostComposer({ onClose, onPublished, inline = false }: PostCompo
   }
 
   return (
-    <div className={inline ? 'mt-3' : 'fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 p-0 sm:items-center sm:p-4'} {...(inline ? {} : { role: 'dialog', 'aria-modal': true })} aria-labelledby="post-composer-title">
-      <form onSubmit={(event) => void publishPost(event)} className={inline ? 'w-full rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6' : 'max-h-[95dvh] w-full max-w-2xl overflow-y-auto rounded-t-3xl bg-white p-4 shadow-2xl sm:rounded-3xl sm:p-6'}>
-        <div className="flex items-start justify-between gap-4">
+    <div className={inline ? 'mt-3' : 'fixed inset-0 z-50 flex justify-center bg-slate-100 p-0 sm:overflow-y-auto sm:p-4'} {...(inline ? {} : { role: 'dialog', 'aria-modal': true })} aria-labelledby="post-composer-title">
+      <form onSubmit={(event) => void publishPost(event)} className={inline ? 'w-full rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6' : 'flex h-[100dvh] w-full max-w-3xl flex-col overflow-hidden bg-white shadow-xl sm:h-auto sm:min-h-[min(760px,calc(100dvh-2rem))] sm:rounded-3xl'}>
+        <div className={`flex items-center justify-between gap-4 ${inline ? '' : 'border-b border-slate-200 px-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-3 sm:px-6'}`}>
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.24em] text-indigo-600">Create</p>
-            <h2 id="post-composer-title" className="mt-1 text-xl font-semibold text-slate-900">Share a post</h2>
+            <p className="text-xs font-bold uppercase tracking-[0.24em] text-indigo-600">NOVAKOKO · Create</p>
+            <h2 id="post-composer-title" className="mt-1 text-xl font-semibold text-slate-900">Create post</h2>
           </div>
           <button type="button" onClick={onClose} disabled={submitting} aria-label="Close post composer" className="rounded-full p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-50">
             <X className="h-5 w-5" aria-hidden="true" />
           </button>
         </div>
 
+        <div className={inline ? '' : 'min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6'}>
+        <div className="flex items-center gap-3">
+          <Avatar src={profileAvatar} alt={user?.name ?? 'Your profile'} size="md" />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-slate-900">{user?.name ?? 'Your profile'}</p>
+            <label className="mt-1 inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
+              <span className="sr-only">Post audience</span>
+              <select aria-label="Post privacy" value={visibility} onChange={(event) => setVisibility(event.target.value as Visibility)} className="max-w-40 bg-transparent outline-none">
+                <option value="PUBLIC">Everyone</option>
+                <option value="FOLLOWERS">Followers</option>
+                <option value="PRIVATE">Only me</option>
+              </select>
+            </label>
+          </div>
+        </div>
         <textarea
           aria-label="Post content"
           placeholder="What's on your mind?"
@@ -123,7 +155,7 @@ export function PostComposer({ onClose, onPublished, inline = false }: PostCompo
           onChange={(event) => setContent(event.target.value)}
           maxLength={2500}
           required
-          className="mt-5 min-h-36 w-full resize-y rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none"
+          className={`mt-4 w-full resize-y rounded-2xl border border-slate-200 bg-slate-50 p-4 text-base text-slate-800 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none ${inline ? 'min-h-36' : 'min-h-48 sm:min-h-64'}`}
         />
 
         <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto]">
@@ -139,8 +171,8 @@ export function PostComposer({ onClose, onPublished, inline = false }: PostCompo
               className="min-w-0 flex-1 bg-transparent outline-none disabled:opacity-50"
             />
           </label>
-          <label className="cursor-pointer rounded-xl bg-indigo-50 px-4 py-2 text-center text-sm font-semibold text-indigo-700 hover:bg-indigo-100">
-            Add photo or video
+          <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-indigo-50 px-4 py-3 text-center text-sm font-semibold text-indigo-700 hover:bg-indigo-100">
+            <Camera className="h-4 w-4" aria-hidden="true" /> Photos / Videos
             <input
               type="file"
               aria-label="Upload post image or video"
@@ -150,6 +182,10 @@ export function PostComposer({ onClose, onPublished, inline = false }: PostCompo
             />
           </label>
         </div>
+        {!inline ? <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 p-3">
+          <p className="text-sm font-semibold text-slate-700">Add to your post</p>
+          <Link to="/live" className="inline-flex min-h-11 items-center gap-2 rounded-xl px-3 text-sm font-semibold text-rose-700 hover:bg-rose-50"><Radio className="h-4 w-4" aria-hidden="true" /> Go Live</Link>
+        </div> : null}
         <p className="mt-2 text-xs text-slate-500">Images up to 10 MB · Videos up to 100 MB</p>
 
         {mediaFile && selectedMedia ? (
@@ -169,24 +205,26 @@ export function PostComposer({ onClose, onPublished, inline = false }: PostCompo
           <progress aria-label="Upload progress" max={100} value={uploadProgress} className="h-2 w-full accent-indigo-600" />
         </div> : null}
 
-        <label className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-600">
+        {inline ? <label className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-600">
           <span>Who can see this post?</span>
           <select aria-label="Post privacy" value={visibility} onChange={(event) => setVisibility(event.target.value as Visibility)} className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800">
             <option value="PUBLIC">Everyone</option>
             <option value="FOLLOWERS">Followers</option>
             <option value="PRIVATE">Only me</option>
           </select>
-        </label>
+        </label> : null}
 
         <div className="mt-4 flex items-start gap-2 rounded-xl bg-amber-50 p-3 text-xs text-amber-900">
           <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <p>Posts are checked under NOVAKOKO community safety rules before publication.</p>
         </div>
+        {profileError ? <p className="mt-3 text-xs text-slate-500" role="status">{profileError}</p> : null}
         {error ? <p className="mt-3 text-sm text-rose-700" role="alert">{error}</p> : null}
-        <div className="mt-5 flex justify-end gap-2">
-          <Button type="button" variant="ghost" onClick={onClose} disabled={submitting}>Cancel</Button>
-          <Button type="submit" variant="primary" disabled={submitting || !content.trim()}>
-            {submitting ? uploadProgress !== null ? 'Uploading and publishing…' : 'Publishing…' : 'Publish post'}
+        </div>
+        <div className={inline ? 'mt-5 flex justify-end gap-2' : 'flex items-center justify-between gap-2 border-t border-slate-200 bg-white px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:justify-end sm:px-6'}>
+          {!inline ? <Button type="button" variant="ghost" onClick={onClose} disabled={submitting}>Cancel</Button> : null}
+          <Button type="submit" variant="primary" disabled={submitting || !content.trim()} className={!inline ? 'min-h-11 flex-1 sm:flex-none' : ''}>
+            {submitting ? uploadProgress !== null ? 'Uploading and publishing…' : 'Publishing…' : inline ? 'Publish post' : 'POST'}
           </Button>
         </div>
       </form>

@@ -110,6 +110,8 @@ export type SocialNotificationRecord = {
   actorId?: string | null;
   type: string;
   message: string;
+  link?: string | null;
+  dedupeKey?: string | null;
   readAt?: string | null;
   createdAt: string;
 };

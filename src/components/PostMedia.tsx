@@ -15,7 +15,7 @@ type PostMediaProps = {
 export function PostMedia({ url, alt = 'Post attachment', className = '', active = true, autoPlay = false, postId, measurementSource = 'unknown' }: PostMediaProps) {
   const [loaded, setLoaded] = useState<{ url: string; source: string; error: string }>({ url: '', source: '', error: '' })
   const videoRef = useRef<HTMLVideoElement | null>(null)
-  const sessionRef = useRef<{ sessionId: string; startRequest: Promise<boolean>; lastSentTime: number; sendingHeartbeat: boolean } | null>(null)
+  const sessionRef = useRef<{ sessionId: string; startRequest: Promise<boolean>; lastSentTime: number; lastObservedTime: number; heartbeatRequest: Promise<void> | null } | null>(null)
   const isUploaded = url.startsWith('/api/media/')
   const isVideo = isVideoPostMediaUrl(url)
 
@@ -49,63 +49,91 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
     const video = videoRef.current
     if (!video || !isVideo || !postId) return
 
+    const sendHeartbeat = async (session: NonNullable<typeof sessionRef.current>, final = false) => {
+      if (session.heartbeatRequest) await session.heartbeatRequest
+      if (!final && (sessionRef.current !== session || video.paused || document.visibilityState !== 'visible')) return
+      const request = (async () => {
+        if (!await session.startRequest || (!final && sessionRef.current !== session)) return
+        const currentTimeSeconds = final ? session.lastObservedTime : video.currentTime
+        if (currentTimeSeconds <= session.lastSentTime) return
+        await apiRequest('/api/monetization/video-views/heartbeat', {
+          method: 'POST',
+          body: JSON.stringify({ postId, sessionId: session.sessionId, currentTimeSeconds }),
+        })
+        session.lastSentTime = currentTimeSeconds
+        session.lastObservedTime = currentTimeSeconds
+      })().catch((error: unknown) => {
+        console.warn('Video playback heartbeat was not recorded.', error)
+      })
+      session.heartbeatRequest = request
+      try {
+        await request
+      } finally {
+        if (session.heartbeatRequest === request) session.heartbeatRequest = null
+      }
+    }
+
     const finalizePlayback = async () => {
       const session = sessionRef.current
       if (!session) return
       sessionRef.current = null
       try {
         if (!await session.startRequest) return
+        await sendHeartbeat(session, true)
         await apiRequest(`/api/monetization/video-views/finish`, {
           method: 'POST',
           body: JSON.stringify({ postId, sessionId: session.sessionId }),
         })
-      } catch {
-        // Playback should remain usable if the measurement service is temporarily unavailable.
+      } catch (error) {
+        console.warn('Video playback measurement could not be finalized.', error)
       }
     }
 
     const handlePlay = () => {
-      if (sessionRef.current) return
+      if (sessionRef.current || video.paused) return
+      if (!Number.isFinite(video.duration) || video.duration <= 0) return
       const sessionId = `${postId}-${crypto.randomUUID()}`
       const session = {
         sessionId,
         lastSentTime: video.currentTime,
-        sendingHeartbeat: false,
+        lastObservedTime: video.currentTime,
+        heartbeatRequest: null as Promise<void> | null,
         startRequest: Promise.resolve(false),
       }
       sessionRef.current = session
       session.startRequest = apiRequest('/api/monetization/video-views/start', {
         method: 'POST',
-        body: JSON.stringify({ postId, sessionId, durationSeconds: Math.max(1, Math.ceil(video.duration || 1)), source: measurementSource }),
-      }).then(() => true).catch(() => false)
+        body: JSON.stringify({ postId, sessionId, durationSeconds: Math.max(1, Math.ceil(video.duration)), startPositionSeconds: video.currentTime, source: measurementSource }),
+      }).then(() => true).catch((error: unknown) => {
+        console.warn('Video playback measurement session could not be started.', error)
+        return false
+      })
     }
 
     const heartbeat = async () => {
       const session = sessionRef.current
-      if (!session || session.sendingHeartbeat || video.paused || document.visibilityState !== 'visible' || video.currentTime <= session.lastSentTime) return
-      session.sendingHeartbeat = true
-      try {
-        if (!await session.startRequest || sessionRef.current !== session) return
-        await apiRequest('/api/monetization/video-views/heartbeat', {
-          method: 'POST',
-          body: JSON.stringify({ postId, sessionId: session.sessionId, currentTimeSeconds: video.currentTime }),
-        })
-        session.lastSentTime = video.currentTime
-      } catch {
-        // A rejected heartbeat is not retried as credited watch time.
-      } finally {
-        session.sendingHeartbeat = false
-      }
+      if (session) await sendHeartbeat(session)
     }
 
-    const handlePause = () => { void finalizePlayback() }
-    const handleEnded = () => { void finalizePlayback() }
+    const handleTimeUpdate = () => {
+      const session = sessionRef.current
+      if (session && !video.paused && document.visibilityState === 'visible') session.lastObservedTime = video.currentTime
+    }
+    const finalizeAtCurrentPosition = () => {
+      if (sessionRef.current) sessionRef.current.lastObservedTime = video.currentTime
+      void finalizePlayback()
+    }
+    const handlePause = () => { finalizeAtCurrentPosition() }
+    const handleEnded = () => { finalizeAtCurrentPosition() }
     const handleVisibility = () => {
-      if (document.hidden) void finalizePlayback()
+      if (document.hidden) finalizeAtCurrentPosition()
+      else if (!video.paused) handlePlay()
     }
     const heartbeatTimer = window.setInterval(() => { void heartbeat() }, 5_000)
 
     video.addEventListener('play', handlePlay)
+    video.addEventListener('loadedmetadata', handlePlay)
+    video.addEventListener('timeupdate', handleTimeUpdate)
     video.addEventListener('pause', handlePause)
     video.addEventListener('ended', handleEnded)
     document.addEventListener('visibilitychange', handleVisibility)
@@ -113,6 +141,8 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
     return () => {
       window.clearInterval(heartbeatTimer)
       video.removeEventListener('play', handlePlay)
+      video.removeEventListener('loadedmetadata', handlePlay)
+      video.removeEventListener('timeupdate', handleTimeUpdate)
       video.removeEventListener('pause', handlePause)
       video.removeEventListener('ended', handleEnded)
       document.removeEventListener('visibilitychange', handleVisibility)

@@ -27,6 +27,7 @@ const videoMeasurementStartSchema = z.object({
   postId: z.string().trim().min(1, 'A postId is required.').max(128),
   sessionId: z.string().trim().min(1, 'A sessionId is required.').max(128),
   durationSeconds: z.number().int().min(1).max(86_400),
+  startPositionSeconds: z.number().min(0).max(86_400).default(0),
   source: measurementSourceSchema.optional(),
 }).strict();
 const videoMeasurementHeartbeatSchema = z.object({
@@ -88,7 +89,7 @@ async function getSettings() {
 async function getMeasurementReadiness() {
   if (await isDatabaseAvailable()) {
     const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const yes = await prisma.videoMeasurement.findFirst({ where: { qualified: true, createdAt: { gte: cutoff } }, select: { id: true } });
+    const yes = await prisma.videoMeasurement.findFirst({ where: { qualified: true, endedAt: { gte: cutoff } }, select: { id: true } });
     return Boolean(yes);
   }
   return false;
@@ -100,7 +101,7 @@ async function getCreatorMeasurementMetrics(userId: string, settings: Awaited<Re
     const records = await prisma.videoMeasurement.findMany({
       where: {
         qualified: true,
-        createdAt: { gte: cutoff },
+        endedAt: { gte: cutoff },
         post: { authorId: userId },
       },
       select: { watchSeconds: true },
@@ -110,8 +111,8 @@ async function getCreatorMeasurementMetrics(userId: string, settings: Awaited<Re
     return { qualifiedViews, watchTimeSeconds, available: true };
   }
   const records = socialStore.state.videoMeasurements.filter((entry) => {
-    const createdAt = new Date(entry.createdAt).getTime();
-    return entry.qualified && createdAt >= cutoff.getTime() && socialStore.state.posts.some((post) => post.id === entry.postId && post.authorId === userId);
+    const endedAt = new Date(entry.endedAt).getTime();
+    return entry.qualified && endedAt >= cutoff.getTime() && socialStore.state.posts.some((post) => post.id === entry.postId && post.authorId === userId);
   });
   const qualifiedViews = records.length;
   const watchTimeSeconds = records.reduce((sum, record) => sum + record.watchSeconds, 0);
@@ -267,6 +268,7 @@ router.post('/monetization/video-views/start', requireAuth, async (req, res) => 
   const parsed = videoMeasurementStartSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ message: 'Invalid video playback session.', errors: parsed.error.flatten() });
   const body = parsed.data;
+  if (body.startPositionSeconds > body.durationSeconds) return res.status(400).json({ message: 'Playback start position exceeds the video duration.' });
   const post = await findPostForMeasurement(body.postId, req.user!.id);
   if (!post || post.authorId === req.user!.id) return res.status(403).json({ message: 'This video is not eligible for playback measurement.' });
   const startedAt = timestamp();
@@ -280,7 +282,7 @@ router.post('/monetization/video-views/start', requireAuth, async (req, res) => 
           source: body.source ?? 'unknown',
           watchSeconds: 0,
           durationSeconds: body.durationSeconds,
-          lastPositionSeconds: 0,
+          lastPositionSeconds: Math.floor(body.startPositionSeconds),
           lastHeartbeatAt: startedAt,
           active: true,
           startedAt,
@@ -298,7 +300,7 @@ router.post('/monetization/video-views/start', requireAuth, async (req, res) => 
   }
   const exists = socialStore.state.videoMeasurements.some((entry) => entry.postId === body.postId && entry.viewerId === req.user!.id && entry.sessionId === body.sessionId);
   if (exists) return res.status(409).json({ message: 'This playback session has already been recorded.', duplicate: true });
-  socialStore.state.videoMeasurements.push({ id: `video_measurement_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, postId: body.postId, viewerId: req.user!.id, sessionId: body.sessionId, source: body.source ?? 'unknown', watchSeconds: 0, durationSeconds: body.durationSeconds, lastPositionSeconds: 0, lastHeartbeatAt: startedAt.toISOString(), active: true, startedAt: startedAt.toISOString(), endedAt: startedAt.toISOString(), qualified: false, createdAt: startedAt.toISOString() });
+  socialStore.state.videoMeasurements.push({ id: `video_measurement_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, postId: body.postId, viewerId: req.user!.id, sessionId: body.sessionId, source: body.source ?? 'unknown', watchSeconds: 0, durationSeconds: body.durationSeconds, lastPositionSeconds: Math.floor(body.startPositionSeconds), lastHeartbeatAt: startedAt.toISOString(), active: true, startedAt: startedAt.toISOString(), endedAt: startedAt.toISOString(), qualified: false, createdAt: startedAt.toISOString() });
   return res.status(201).json({ sessionId: body.sessionId, startedAt });
 });
 
@@ -310,9 +312,12 @@ router.post('/monetization/video-views/heartbeat', requireAuth, async (req, res)
   if (await isDatabaseAvailable()) {
     const record = await prisma.videoMeasurement.findUnique({ where: { postId_viewerId_sessionId: { postId: body.postId, viewerId: req.user!.id, sessionId: body.sessionId } } });
     if (!record || !record.active || !record.lastHeartbeatAt) return res.status(409).json({ message: 'Playback session is not active.' });
+    if (body.currentTimeSeconds > record.durationSeconds) return res.status(400).json({ message: 'Playback position exceeds the video duration.' });
     const elapsed = (now.getTime() - record.lastHeartbeatAt.getTime()) / 1000;
     const positionDelta = body.currentTimeSeconds - record.lastPositionSeconds;
-    const creditedSeconds = elapsed > 0 && elapsed <= 15 && positionDelta > 0 && positionDelta <= elapsed * 4 + 2 ? Math.floor(elapsed) : 0;
+    const creditedSeconds = elapsed > 0 && elapsed <= 15 && positionDelta > 0 && positionDelta <= elapsed * 4 + 2
+      ? Math.min(Math.floor(elapsed), Math.floor(positionDelta))
+      : 0;
     const updated = await prisma.videoMeasurement.updateMany({
       where: { id: record.id, active: true, lastHeartbeatAt: record.lastHeartbeatAt },
       data: { watchSeconds: { increment: creditedSeconds }, lastPositionSeconds: Math.floor(body.currentTimeSeconds), lastHeartbeatAt: now },
@@ -322,9 +327,12 @@ router.post('/monetization/video-views/heartbeat', requireAuth, async (req, res)
   }
   const record = socialStore.state.videoMeasurements.find((entry) => entry.postId === body.postId && entry.viewerId === req.user!.id && entry.sessionId === body.sessionId);
   if (!record || !record.active || !record.lastHeartbeatAt) return res.status(409).json({ message: 'Playback session is not active.' });
+  if (body.currentTimeSeconds > record.durationSeconds) return res.status(400).json({ message: 'Playback position exceeds the video duration.' });
   const elapsed = (now.getTime() - new Date(record.lastHeartbeatAt).getTime()) / 1000;
   const positionDelta = body.currentTimeSeconds - record.lastPositionSeconds;
-  const creditedSeconds = elapsed > 0 && elapsed <= 15 && positionDelta > 0 && positionDelta <= elapsed * 4 + 2 ? Math.floor(elapsed) : 0;
+  const creditedSeconds = elapsed > 0 && elapsed <= 15 && positionDelta > 0 && positionDelta <= elapsed * 4 + 2
+    ? Math.min(Math.floor(elapsed), Math.floor(positionDelta))
+    : 0;
   record.watchSeconds += creditedSeconds;
   record.lastPositionSeconds = Math.floor(body.currentTimeSeconds);
   record.lastHeartbeatAt = now.toISOString();

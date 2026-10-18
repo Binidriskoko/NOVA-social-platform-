@@ -56,7 +56,48 @@ describe('creator monetization and internal advertising', () => {
     const paused = await request(app).post('/api/monetization/video-views/finish').set('Cookie', viewer.auth).send({ postId: post.body.post.id, sessionId: 'session-paused-1' });
     expect(paused.status).toBe(200);
     expect(paused.body.qualified).toBe(false);
-  });
+
+    await request(app).post('/api/monetization/video-views/start').set('Cookie', viewer.auth).send({
+      postId: post.body.post.id,
+      sessionId: 'session-slow-playback-1',
+      durationSeconds: 90,
+      source: 'feed',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const slowHeartbeat = await request(app).post('/api/monetization/video-views/heartbeat').set('Cookie', viewer.auth).send({
+      postId: post.body.post.id,
+      sessionId: 'session-slow-playback-1',
+      currentTimeSeconds: 0.5,
+    });
+    expect(slowHeartbeat.status).toBe(200);
+    expect(slowHeartbeat.body.creditedSeconds).toBe(0);
+    const slowFinish = await request(app).post('/api/monetization/video-views/finish').set('Cookie', viewer.auth).send({
+      postId: post.body.post.id,
+      sessionId: 'session-slow-playback-1',
+    });
+    expect(slowFinish.body.qualified).toBe(false);
+
+    await request(app).post('/api/monetization/video-views/start').set('Cookie', viewer.auth).send({
+      postId: post.body.post.id,
+      sessionId: 'session-resumed-playback-1',
+      durationSeconds: 90,
+      startPositionSeconds: 20,
+      source: 'feed',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const resumedHeartbeat = await request(app).post('/api/monetization/video-views/heartbeat').set('Cookie', viewer.auth).send({
+      postId: post.body.post.id,
+      sessionId: 'session-resumed-playback-1',
+      currentTimeSeconds: 21.5,
+    });
+    expect(resumedHeartbeat.status).toBe(200);
+    expect(resumedHeartbeat.body.creditedSeconds).toBeGreaterThanOrEqual(1);
+    const resumedFinish = await request(app).post('/api/monetization/video-views/finish').set('Cookie', viewer.auth).send({
+      postId: post.body.post.id,
+      sessionId: 'session-resumed-playback-1',
+    });
+    expect(resumedFinish.body.qualified).toBe(true);
+  }, 15000);
 
   it('blocks unauthorized, impossible, private, and expired playback submissions', async () => {
     const creator = await register('RestrictedCreator');
@@ -90,7 +131,19 @@ describe('creator monetization and internal advertising', () => {
       currentTimeSeconds: 20,
     });
     expect(forged.status).toBe(409);
-  });
+    const overrunStart = await request(app).post('/api/monetization/video-views/start').set('Cookie', viewer.auth).send({
+      postId: publicPost.body.post.id,
+      sessionId: 'session-overrun-1',
+      durationSeconds: 1,
+    });
+    expect(overrunStart.status).toBe(201);
+    const impossiblePosition = await request(app).post('/api/monetization/video-views/heartbeat').set('Cookie', viewer.auth).send({
+      postId: publicPost.body.post.id,
+      sessionId: 'session-overrun-1',
+      currentTimeSeconds: 2,
+    });
+    expect(impossiblePosition.status).toBe(400);
+  }, 15000);
 
   it('uses the rolling qualified-view window and creator eligibility thresholds from validated records only', async () => {
     const creator = await register('WindowCreator');
@@ -122,10 +175,10 @@ describe('creator monetization and internal advertising', () => {
       lastPositionSeconds: 25,
       lastHeartbeatAt: new Date().toISOString(),
       active: false,
-      startedAt: new Date().toISOString(),
+      startedAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString(),
       endedAt: new Date().toISOString(),
       qualified: true,
-      createdAt: new Date().toISOString(),
+      createdAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString(),
     }, {
       id: 'window-old',
       postId: post.body.post.id,

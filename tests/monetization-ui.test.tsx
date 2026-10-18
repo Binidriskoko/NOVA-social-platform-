@@ -5,9 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const testState = vi.hoisted(() => ({ apiRequest: vi.fn() }))
 
-vi.mock('../src/lib/api', () => ({ apiRequest: testState.apiRequest }))
+vi.mock('../src/lib/api', () => ({
+  apiRequest: testState.apiRequest,
+  fetchMediaBlob: vi.fn(),
+  resolveMediaUrl: (url: string) => url,
+}))
 
 import { FeedAdSlot } from '../src/components/FeedAdSlot'
+import { PostMedia } from '../src/components/PostMedia'
 import { CreatorMonetizationPage } from '../src/pages/CreatorMonetizationPage'
 
 let root: Root
@@ -26,6 +31,29 @@ afterEach(() => {
 })
 
 describe('creator and advertising UI', () => {
+  it('flushes the final video position before closing playback on pause', async () => {
+    testState.apiRequest.mockResolvedValue({})
+    await act(async () => { root.render(<PostMedia url="https://cdn.example.test/clip.mp4" postId="post-1" />) })
+    const video = host.querySelector('video')!
+    Object.defineProperty(video, 'paused', { configurable: true, value: false })
+    Object.defineProperty(video, 'duration', { configurable: true, value: 120 })
+    Object.defineProperty(video, 'currentTime', { configurable: true, writable: true, value: 0 })
+    await act(async () => { video.dispatchEvent(new Event('play')) })
+    video.currentTime = 31
+    video.dispatchEvent(new Event('timeupdate'))
+    Object.defineProperty(video, 'paused', { configurable: true, value: true })
+    await act(async () => {
+      video.dispatchEvent(new Event('pause'))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(testState.apiRequest.mock.calls.map(([path]) => path)).toEqual([
+      '/api/monetization/video-views/start',
+      '/api/monetization/video-views/heartbeat',
+      '/api/monetization/video-views/finish',
+    ])
+    expect(testState.apiRequest.mock.calls[1][1]?.body).toContain('"currentTimeSeconds":31')
+  })
+
   it('shows unavailable creator metrics honestly and prevents an ineligible application', async () => {
     testState.apiRequest.mockResolvedValue({
       settings: { minimumPayoutCents: 500 },

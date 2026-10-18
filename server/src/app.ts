@@ -26,6 +26,7 @@ const testRuntime = env.NODE_ENV === 'test' || process.env.VITEST === 'true';
 const allowedOrigins = Array.from(
   new Set([
     ...env.CORS_ORIGIN.split(',').map((origin) => origin.trim()).filter(Boolean),
+    'https://localhost',
     'https://nova-social-platform-svx2.vercel.app',
     'https://nova-social-platform.vercel.app',
   ]),

@@ -4,6 +4,32 @@ import request from 'supertest';
 import { app } from '../app.js';
 
 describe('messaging, calling, and live API routing', () => {
+  it('allows the Android Capacitor HTTPS origin without changing browser origin handling', async () => {
+    const androidPreflight = await request(app)
+      .options('/api/auth/login')
+      .set('Origin', 'https://localhost')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'content-type');
+    const browserPreflight = await request(app)
+      .options('/api/auth/login')
+      .set('Origin', 'https://nova-social-platform.vercel.app')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'content-type');
+    const untrustedPreflight = await request(app)
+      .options('/api/auth/login')
+      .set('Origin', 'https://untrusted.example')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'content-type');
+
+    expect(androidPreflight.status).toBe(204);
+    expect(androidPreflight.headers['access-control-allow-origin']).toBe('https://localhost');
+    expect(androidPreflight.headers['access-control-allow-credentials']).toBe('true');
+    expect(browserPreflight.status).toBe(204);
+    expect(browserPreflight.headers['access-control-allow-origin']).toBe('https://nova-social-platform.vercel.app');
+    expect(browserPreflight.headers['access-control-allow-credentials']).toBe('true');
+    expect(untrustedPreflight.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
   it('rewrites API paths to Render before applying the SPA fallback', () => {
     const vercelConfig = JSON.parse(
       readFileSync(new URL('../../../vercel.json', import.meta.url), 'utf8'),

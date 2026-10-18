@@ -110,3 +110,20 @@ Payment records are provider-agnostic and remain `PENDING` until a real provider
 ## Verification
 
 After deployment, verify `GET /api/health` returns HTTP 200 with `status: ok` and `database: ok`, load the web domain, register with a username/password and community rules accepted, log in with the username or optional phone/email, create a post, send a message, open the realtime stream, and confirm an admin-only endpoint rejects a normal user. Inspect logs for startup and database errors without exposing secret values.
+
+## Android APK releases
+
+The stable public download page is <https://github.com/Binidriskoko/NOVA-social-platform-/releases/latest>. Android uses the Render API directly at `https://nova-social-platform-api.onrender.com`; browser production continues to use the Vercel same-origin `/api` rewrite. Android update discovery reads `public/release-metadata.json` from the public `main` branch and only shows an update inside the Android app when its version code is newer. The notice opens the stable Releases page. Android still requires users to approve APK installation; this is not a silent self-update mechanism.
+
+Before a release tag is created, update `versionCode` and `versionName` in `android/app/build.gradle`, the matching `ANDROID_VERSION_CODE` and `APP_VERSION_NAME` in `src/config/release.ts`, and all fields in `public/release-metadata.json` to that release. Keep these version values synchronized, use the official Releases page URL, and include the release notes/date. Then push the commit and its matching `vMAJOR.MINOR.PATCH` tag. The `Android Release` workflow builds web assets, syncs Capacitor, signs and validates the APK, generates its SHA-256 checksum, and creates a GitHub Release with both files. The script can also be run locally with Node.js 22+, JDK 21, Android SDK platform/build-tools 35, and the same signing environment:
+
+```sh
+export ANDROID_KEYSTORE_PATH=/secure/path/to/original-release.jks
+export ANDROID_KEYSTORE_PASSWORD=...
+export ANDROID_KEY_ALIAS=...
+export ANDROID_KEY_PASSWORD=...
+npm ci
+npm run android:release
+```
+
+Do not create or substitute a signing key. The repository's existing public APK and the v1.0.0 GitHub Release asset use an Android Debug certificate with SHA-256 fingerprint `C8:1B:27:66:C7:00:A3:7A:09:6C:7A:26:F4:F9:2D:A7:34:80:F5:5F:62:21:D1:C6:60:AC:90:F4:50:80:07:DE`. The build script and workflow refuse any signing certificate that differs from it, because Android requires the same certificate for an in-place update. That certificate's private key was not found in the workspace; a matching key must be recovered and stored in the GitHub repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD` before the workflow can publish a compatible update. Do not label or distribute an APK signed by a different key as an update to existing installs.

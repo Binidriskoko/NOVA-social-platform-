@@ -1,61 +1,88 @@
 import { useEffect, useState } from 'react'
-import { Button } from './ui/Button'
-import { ANDROID_VERSION_CODE, RELEASE_METADATA_URL } from '../config/release'
+import { Capacitor } from '@capacitor/core'
+import { X } from 'lucide-react'
+import { ANDROID_VERSION_CODE, UPDATE_NOTICE_STORAGE_KEY } from '../config/release'
+import { fetchReleaseMetadata, isUpdateAvailable, type ReleaseMetadata } from '../lib/releaseMetadata'
 
-type Metadata = {
-  versionName: string
-  versionCode: number
-  releaseNotes?: string
-  releaseDate?: string
-  minSupportedVersionCode?: number
-  downloadPageUrl?: string
+let metadataRequest: Promise<ReleaseMetadata> | undefined
+const noticeVersionsMarked = new Set<number>()
+
+function hasShownNotice(versionCode: number) {
+  const key = `${UPDATE_NOTICE_STORAGE_KEY}:${versionCode}`
+  try {
+    return noticeVersionsMarked.has(versionCode) || localStorage.getItem(key) === 'true'
+  } catch {
+    return noticeVersionsMarked.has(versionCode)
+  }
+}
+
+function markNoticeShown(versionCode: number) {
+  noticeVersionsMarked.add(versionCode)
+  try {
+    localStorage.setItem(`${UPDATE_NOTICE_STORAGE_KEY}:${versionCode}`, 'true')
+  } catch {
+    // The module-level flag still prevents repeat notices while the app is open.
+  }
 }
 
 export function UpdateChecker() {
-  const [metadata, setMetadata] = useState<Metadata | null>(null)
-  const [shown, setShown] = useState(false)
+  const [release, setRelease] = useState<ReleaseMetadata | null>(null)
 
   useEffect(() => {
-    let mounted = true
-    const controller = new AbortController()
-    // Lightweight fetch; do not block app rendering if it fails.
-    fetch(RELEASE_METADATA_URL, { signal: controller.signal, cache: 'no-cache' })
-      .then((r) => r.ok ? r.json() : Promise.reject(new Error('Release metadata unavailable')))
-      .then((data: Metadata) => {
-        if (!mounted) return
-        setMetadata(data)
-        // Only show once per session and only if remote versionCode is greater.
-        if (typeof data.versionCode === 'number' && data.versionCode > ANDROID_VERSION_CODE) {
-          setShown(true)
-        }
-      })
-      .catch((err) => {
-        if (!mounted) return
-        // Non-fatal; record to console for diagnostics.
-        // Do not block the app if release metadata fetch fails.
-        // eslint-disable-next-line no-console
-        console.warn('UpdateChecker: failed to fetch release metadata', err)
-      })
-    return () => { mounted = false; controller.abort() }
+    if (Capacitor.getPlatform() !== 'android') return
+
+    let active = true
+    const checkForUpdates = () => {
+      metadataRequest ??= fetchReleaseMetadata()
+      void metadataRequest
+        .then((metadata) => {
+          if (active && isUpdateAvailable(ANDROID_VERSION_CODE, metadata) && !hasShownNotice(metadata.versionCode)) {
+            markNoticeShown(metadata.versionCode)
+            setRelease(metadata)
+          }
+        })
+        .catch((error: unknown) => {
+          metadataRequest = undefined
+          if (active) console.warn('Unable to check for NOVAKOKO updates.', error)
+        })
+    }
+    checkForUpdates()
+    window.addEventListener('online', checkForUpdates)
+
+    return () => {
+      active = false
+      window.removeEventListener('online', checkForUpdates)
+    }
   }, [])
 
-  if (!metadata || !shown) return null
-
-  const openDownload = () => {
-    const url = metadata.downloadPageUrl ?? 'https://github.com/Binidriskoko/NOVA-social-platform-/releases/latest'
-    window.open(url, '_blank', 'noopener')
-  }
+  if (!release) return null
 
   return (
-    <div className="mx-4 flex items-center gap-3 rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-sm text-indigo-900 shadow-sm">
-      <div className="flex-1">
-        <div className="font-semibold">New update available — v{metadata.versionName}</div>
-        <div className="mt-0.5 text-xs text-indigo-800/80">{metadata.releaseNotes ?? 'A new version is available.'}</div>
+    <aside
+      aria-label="App update available"
+      className="fixed inset-x-3 top-3 z-50 mx-auto flex max-w-3xl items-start gap-3 rounded-xl border border-indigo-200 bg-white p-4 text-sm text-indigo-950 shadow-xl"
+    >
+      <div className="min-w-0 flex-1">
+        <p className="font-semibold">NOVAKOKO v{release.versionName} is available</p>
+        <p className="mt-1 whitespace-pre-line text-indigo-800">{release.releaseNotes}</p>
+        <p className="mt-2 text-xs text-slate-600">
+          Android will ask you to approve installing the downloaded APK.
+        </p>
       </div>
-      <div className="flex items-center gap-2">
-        <Button type="button" onClick={openDownload} variant="outline">Open download page</Button>
-        <Button type="button" onClick={() => setShown(false)}>Dismiss</Button>
-      </div>
-    </div>
+      <a
+        className="shrink-0 rounded-lg bg-indigo-700 px-3 py-2 font-semibold text-white hover:bg-indigo-800"
+        href={release.downloadPageUrl}
+      >
+        Download
+      </a>
+      <button
+        aria-label="Dismiss update notice"
+        className="rounded-md px-2 py-1 font-semibold text-slate-500 hover:bg-slate-100"
+        onClick={() => setRelease(null)}
+        type="button"
+      >
+        <X aria-hidden="true" className="h-4 w-4" />
+      </button>
+    </aside>
   )
 }

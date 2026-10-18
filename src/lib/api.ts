@@ -1,9 +1,11 @@
 import { clearStoredAccessToken, getStoredAccessToken } from './session'
+import { Capacitor } from '@capacitor/core'
 
 const productionApiBaseUrl = 'https://nova-social-platform-api.onrender.com'
-const configuredApiBaseUrl = import.meta.env.PROD
-  ? ''
-  : import.meta.env.VITE_API_BASE_URL?.trim() || productionApiBaseUrl
+const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim()
+  || (Capacitor.getPlatform() === 'android'
+    ? productionApiBaseUrl
+    : import.meta.env.PROD ? '' : productionApiBaseUrl)
 
 export const API_BASE_URL = configuredApiBaseUrl.replace(/\/$/, '')
 

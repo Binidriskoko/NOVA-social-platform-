@@ -19,6 +19,7 @@ import { CompleteProfilePage } from './pages/CompleteProfilePage'
 import { CreatorMonetizationPage } from './pages/CreatorMonetizationPage'
 import { AdCampaignsPage } from './pages/AdCampaignsPage'
 import { CreatePage } from './pages/CreatePage'
+import { UpdateChecker } from './components/UpdateChecker'
 
 const LivePage = lazy(() => import('./pages/LivePage').then(({ LivePage: page }) => ({ default: page })))
 const CallsPage = lazy(() => import('./pages/CallsPage').then(({ CallsPage: page }) => ({ default: page })))
@@ -115,6 +116,7 @@ function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <UpdateChecker />
         <AppRoutes />
       </BrowserRouter>
     </AuthProvider>

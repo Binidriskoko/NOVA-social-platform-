@@ -4,6 +4,8 @@ import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Bell,
   CircleDot,
+  CircleDollarSign,
+  Megaphone,
   Compass,
   House,
   LogOut,
@@ -36,6 +38,8 @@ export const sidebarItems = [
   { label: 'Live', path: '/live', icon: Radio },
   { label: 'Notifications', path: '/notifications', icon: Bell },
   { label: 'Profile', path: '/profile', icon: UserRound },
+  { label: 'Creator earnings', path: '/creator/monetization', icon: CircleDollarSign },
+  { label: 'Advertise', path: '/advertise', icon: Megaphone },
   { label: 'Settings', path: '/settings', icon: Settings },
   { label: 'AI Studio', path: '/ai', icon: Sparkles },
 ]
@@ -186,6 +190,8 @@ function TopBar({ currentPath }: TopBarProps) {
     '/communities': 'Communities',
     '/profile': 'Profile',
     '/settings': 'Settings',
+    '/creator/monetization': 'Creator earnings',
+    '/advertise': 'Ad campaigns',
     '/admin': 'Admin Dashboard',
     '/login': 'Login',
     '/register': 'Register',

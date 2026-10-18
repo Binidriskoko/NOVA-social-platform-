@@ -158,6 +158,12 @@ model User {
   adminActions             AdminAction[]             @relation("AdminActionActor")
   actionTargets            AdminAction[]             @relation("AdminActionTarget")
   creatorProfile           CreatorProfile?
+  creatorApplications      CreatorApplication[]       @relation("CreatorApplicant")
+  reviewedCreatorApplications CreatorApplication[]    @relation("CreatorApplicationReviewer")
+  adCampaigns              AdCampaign[]                @relation("AdCampaignAdvertiser")
+  reviewedAdCampaigns      AdCampaign[]                @relation("AdCampaignReviewer")
+  adEvents                 AdEvent[]
+  adConsent                AdConsent?
   creatorSubscriptions     CreatorSubscription[]     @relation("CreatorSubscriber")
   businessOwned            BusinessProfile?          @relation("BusinessOwner")
   businessMemberships      BusinessMember[]
@@ -692,6 +698,115 @@ model CreatorProfile {
   payouts       CreatorPayoutRequest[]
 
   @@index([isEnabled])
+}
+
+model MonetizationSettings {
+  id                      String   @id @default("default")
+  enabled                 Boolean  @default(false)
+  minimumFollowers        Int      @default(1000)
+  minimumQualifiedViews   Int      @default(0)
+  qualifiedViewWindowDays Int      @default(30)
+  minimumWatchTimeSeconds Int      @default(0)
+  minimumEngagementRate   Float    @default(0)
+  minimumAccountAgeDays   Int      @default(30)
+  minimumPublicPosts      Int      @default(0)
+  revenueSharePercent     Int      @default(90)
+  minimumPayoutCents      Int      @default(0)
+  updatedBy               String?
+  updatedAt               DateTime @updatedAt
+}
+
+model CreatorApplication {
+  id                String   @id @default(cuid())
+  creatorId         String
+  status            String   @default("PENDING")
+  reason            String?
+  reviewNote        String?
+  reviewedBy        String?
+  reviewedAt        DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  creator  User  @relation("CreatorApplicant", fields: [creatorId], references: [id], onDelete: Cascade)
+  reviewer User? @relation("CreatorApplicationReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  @@index([creatorId, createdAt])
+  @@index([status, createdAt])
+}
+
+model AdNetworkSettings {
+  id        String   @id @default("default")
+  enabled   Boolean  @default(false)
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
+
+model AdConsent {
+  id          String    @id @default(cuid())
+  userId      String    @unique
+  consentedAt DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AdPlacement {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  enabled     Boolean  @default(false)
+  dailyBudgetCents Int @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  campaigns AdCampaign[]
+}
+
+model AdCampaign {
+  id                       String   @id @default(cuid())
+  advertiserId             String
+  placementId              String
+  name                     String
+  creativeUrl              String
+  destinationUrl           String
+  status                   String   @default("DRAFT")
+  startsAt                 DateTime
+  endsAt                   DateTime
+  totalBudgetCents         Int
+  dailyBudgetCents         Int
+  costPerImpressionCents   Int      @default(0)
+  costPerClickCents        Int      @default(0)
+  spendCents               Int      @default(0)
+  reviewNote               String?
+  reviewedBy               String?
+  reviewedAt               DateTime?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  advertiser User         @relation("AdCampaignAdvertiser", fields: [advertiserId], references: [id], onDelete: Cascade)
+  reviewer   User?        @relation("AdCampaignReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+  placement  AdPlacement  @relation(fields: [placementId], references: [id], onDelete: Restrict)
+  events     AdEvent[]
+
+  @@index([status, startsAt, endsAt])
+  @@index([advertiserId, createdAt])
+  @@index([placementId, status])
+}
+
+model AdEvent {
+  id           String   @id @default(cuid())
+  campaignId   String
+  viewerId     String
+  eventType    String
+  dayKey       String
+  eventKey     String   @unique
+  amountCents  Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  campaign AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  viewer   User       @relation(fields: [viewerId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, viewerId, eventType, dayKey])
+  @@index([campaignId, eventType, createdAt])
 }
 
 model CreatorSubscription {

@@ -29,6 +29,20 @@ function platformFee(amountCents: number) {
   return Math.floor(amountCents * feeBasisPoints / 10000);
 }
 
+async function currentCreatorRevenueSharePercent() {
+  if (await isDatabaseAvailable()) {
+    const settings = await prisma.monetizationSettings.findUnique({ where: { id: 'default' }, select: { revenueSharePercent: true } });
+    return settings?.revenueSharePercent ?? 90;
+  }
+  return commerceStore.state.monetizationSettings?.revenueSharePercent ?? 90;
+}
+
+function creatorNetAmount(intent: any) {
+  const configured = Number(intent.metadata?.creatorRevenueSharePercent);
+  const sharePercent = Number.isInteger(configured) && configured >= 0 && configured <= 100 ? configured : 90;
+  return Math.floor(intent.amountCents * sharePercent / 100);
+}
+
 async function audit(actorId: string, targetUserId: string | null, actionType: string, details: string) {
   if (await isDatabaseAvailable()) {
     await prisma.adminAction.create({ data: { actorId, targetUserId, actionType, details } });
@@ -87,7 +101,8 @@ export async function createCreatorSubscriptionIntent(subscriberId: string, crea
     if (existing?.status === 'ACTIVE') throw new Error('CREATOR_ALREADY_SUBSCRIBED');
     const subscription = existing ?? await prisma.creatorSubscription.create({ data: { creatorId, subscriberId, status: 'PENDING', amountCents: profile.subscriptionPriceCents, currency: profile.currency, provider: manualPaymentProvider.name } });
     const pending = await findPendingIntent(subscriberId, 'CREATOR_SUBSCRIPTION', subscription.id, idempotencyKey);
-    const intent = pending ?? await makeIntent(subscriberId, 'CREATOR_SUBSCRIPTION', subscription.id, profile.subscriptionPriceCents, profile.currency, { creatorId, subscriberId }, idempotencyKey);
+    const revenueSharePercent = String(await currentCreatorRevenueSharePercent());
+    const intent = pending ?? await makeIntent(subscriberId, 'CREATOR_SUBSCRIPTION', subscription.id, profile.subscriptionPriceCents, profile.currency, { creatorId, subscriberId, creatorRevenueSharePercent: revenueSharePercent }, idempotencyKey);
     return { subscription, intent };
   }
   const profile = commerceStore.state.creators.find((entry) => entry.userId === creatorId && entry.isEnabled);
@@ -99,7 +114,8 @@ export async function createCreatorSubscriptionIntent(subscriberId: string, crea
     commerceStore.state.creatorSubscriptions.push(subscription);
   }
   const pending = await findPendingIntent(subscriberId, 'CREATOR_SUBSCRIPTION', subscription.id, idempotencyKey);
-  const intent = pending ?? await makeIntent(subscriberId, 'CREATOR_SUBSCRIPTION', subscription.id, profile.subscriptionPriceCents, profile.currency, { creatorId, subscriberId }, idempotencyKey);
+  const revenueSharePercent = String(await currentCreatorRevenueSharePercent());
+  const intent = pending ?? await makeIntent(subscriberId, 'CREATOR_SUBSCRIPTION', subscription.id, profile.subscriptionPriceCents, profile.currency, { creatorId, subscriberId, creatorRevenueSharePercent: revenueSharePercent }, idempotencyKey);
   return { subscription, intent };
 }
 
@@ -166,13 +182,14 @@ async function applySettlement(intent: any, status: PaymentStatus, providerRefer
   }
   if (intent.purpose === 'CREATOR_SUBSCRIPTION' && status === 'SUCCESS') {
     const creatorId = intent.metadata.creatorId;
-    const net = intent.amountCents - fee;
+    const net = creatorNetAmount(intent);
+    const creatorFee = intent.amountCents - net;
     if (await isDatabaseAvailable()) {
       await prisma.creatorSubscription.updateMany({ where: { id: intent.targetId, status: 'PENDING' }, data: { status: 'ACTIVE', providerReference, startedAt: new Date() } });
       if (!await prisma.creatorLedgerEntry.findFirst({ where: { reference: intent.reference } })) {
         await prisma.creatorLedgerEntry.create({ data: { creatorId, type: 'SUBSCRIPTION', amountCents: net, currency: intent.currency, reference: intent.reference, description: 'Creator subscription net earnings' } });
         await prisma.financialLedgerEntry.create({ data: { ownerId: creatorId, direction: 'CREDIT', type: 'CREATOR_EARNING', amountCents: net, currency: intent.currency, sourceType: 'PAYMENT', sourceId: intent.reference, idempotencyKey: `${intent.reference}:creator` } });
-        if (fee > 0) await prisma.financialLedgerEntry.create({ data: { ownerId: 'platform', direction: 'CREDIT', type: 'PLATFORM_FEE', amountCents: fee, currency: intent.currency, sourceType: 'PAYMENT', sourceId: intent.reference, idempotencyKey: `${intent.reference}:fee` } });
+        if (creatorFee > 0) await prisma.financialLedgerEntry.create({ data: { ownerId: 'platform', direction: 'CREDIT', type: 'PLATFORM_FEE', amountCents: creatorFee, currency: intent.currency, sourceType: 'PAYMENT', sourceId: intent.reference, idempotencyKey: `${intent.reference}:fee` } });
       }
       return;
     }
@@ -186,7 +203,7 @@ async function applySettlement(intent: any, status: PaymentStatus, providerRefer
     if (!commerceStore.state.creatorLedger.some((entry) => entry.reference === intent.reference)) {
       commerceStore.state.creatorLedger.push({ id: newId('ledger'), creatorId, type: 'SUBSCRIPTION', amountCents: net, currency: intent.currency, reference: intent.reference, description: 'Creator subscription net earnings', createdAt: now() });
       commerceStore.state.financialLedger.push({ id: newId('ledger'), ownerId: creatorId, direction: 'CREDIT', type: 'CREATOR_EARNING', amountCents: net, currency: intent.currency, sourceType: 'PAYMENT', sourceId: intent.reference, idempotencyKey: `${intent.reference}:creator`, createdAt: now() });
-      if (fee > 0) commerceStore.state.financialLedger.push({ id: newId('ledger'), ownerId: 'platform', direction: 'CREDIT', type: 'PLATFORM_FEE', amountCents: fee, currency: intent.currency, sourceType: 'PAYMENT', sourceId: intent.reference, idempotencyKey: `${intent.reference}:fee`, createdAt: now() });
+      if (creatorFee > 0) commerceStore.state.financialLedger.push({ id: newId('ledger'), ownerId: 'platform', direction: 'CREDIT', type: 'PLATFORM_FEE', amountCents: creatorFee, currency: intent.currency, sourceType: 'PAYMENT', sourceId: intent.reference, idempotencyKey: `${intent.reference}:fee`, createdAt: now() });
     }
   }
   if (intent.purpose === 'MARKETPLACE_ORDER' && status === 'SUCCESS') {
@@ -234,7 +251,7 @@ async function applySettlement(intent: any, status: PaymentStatus, providerRefer
   if (status === 'REFUNDED') {
     const refund = commerceStore.state.refunds.find((entry) => entry.paymentReference === intent.reference && entry.status === 'APPROVED');
     if (!refund) return;
-    const feeAmount = ['BUSINESS_VERIFICATION', 'PLATFORM_SUBSCRIPTION'].includes(intent.purpose) ? intent.amountCents : fee;
+    const feeAmount = ['BUSINESS_VERIFICATION', 'PLATFORM_SUBSCRIPTION'].includes(intent.purpose) ? intent.amountCents : intent.purpose === 'CREATOR_SUBSCRIPTION' ? intent.amountCents - creatorNetAmount(intent) : fee;
     const netAmount = intent.amountCents - feeAmount;
     const ownerId = intent.purpose === 'CREATOR_SUBSCRIPTION' ? intent.metadata.creatorId : intent.metadata.sellerId;
     if (ownerId && netAmount > 0) commerceStore.state.financialLedger.push({ id: newId('ledger'), ownerId, direction: 'DEBIT', type: 'REFUND', amountCents: netAmount, currency: intent.currency, sourceType: 'REFUND', sourceId: refund.id, idempotencyKey: `${refund.reference}:seller`, createdAt: now() });
@@ -271,10 +288,11 @@ async function applyDatabaseSettlement(tx: Prisma.TransactionClient, intent: any
   if (intent.purpose === 'CREATOR_SUBSCRIPTION' && status === 'SUCCESS') {
     const activated = await tx.creatorSubscription.updateMany({ where: { id: intent.targetId, status: 'PENDING' }, data: { status: 'ACTIVE', providerReference, startedAt: new Date() } });
     if (!activated.count) return;
-    const net = intent.amountCents - fee;
+    const net = creatorNetAmount(intent);
+    const creatorFee = intent.amountCents - net;
     await tx.creatorLedgerEntry.create({ data: { creatorId: intent.metadata.creatorId, type: 'SUBSCRIPTION', amountCents: net, currency: intent.currency, reference: intent.reference, description: 'Creator subscription net earnings' } });
     await tx.financialLedgerEntry.create({ data: { ownerId: intent.metadata.creatorId, direction: 'CREDIT', type: 'CREATOR_EARNING', amountCents: net, currency: intent.currency, sourceType: 'PAYMENT', sourceId: intent.reference, idempotencyKey: `${intent.reference}:creator` } });
-    if (fee > 0) await tx.financialLedgerEntry.create({ data: { ownerId: 'platform', direction: 'CREDIT', type: 'PLATFORM_FEE', amountCents: fee, currency: intent.currency, sourceType: 'PAYMENT', sourceId: intent.reference, idempotencyKey: `${intent.reference}:fee` } });
+    if (creatorFee > 0) await tx.financialLedgerEntry.create({ data: { ownerId: 'platform', direction: 'CREDIT', type: 'PLATFORM_FEE', amountCents: creatorFee, currency: intent.currency, sourceType: 'PAYMENT', sourceId: intent.reference, idempotencyKey: `${intent.reference}:fee` } });
     return;
   }
   if (intent.purpose === 'MARKETPLACE_ORDER' && status === 'SUCCESS') {
@@ -302,7 +320,7 @@ async function applyDatabaseSettlement(tx: Prisma.TransactionClient, intent: any
     const refund = await tx.financialRefund.findFirst({ where: { paymentReference: intent.reference, status: 'APPROVED' } });
     if (!refund) throw new Error('REFUND_NOT_APPROVED');
     const sellerOrCreatorId = intent.purpose === 'CREATOR_SUBSCRIPTION' ? intent.metadata.creatorId : intent.metadata.sellerId;
-    const feeAmount = ['BUSINESS_VERIFICATION', 'PLATFORM_SUBSCRIPTION'].includes(intent.purpose) ? intent.amountCents : fee;
+    const feeAmount = ['BUSINESS_VERIFICATION', 'PLATFORM_SUBSCRIPTION'].includes(intent.purpose) ? intent.amountCents : intent.purpose === 'CREATOR_SUBSCRIPTION' ? intent.amountCents - creatorNetAmount(intent) : fee;
     const netAmount = intent.amountCents - feeAmount;
     if (sellerOrCreatorId && netAmount > 0) {
       await tx.financialLedgerEntry.create({ data: { ownerId: sellerOrCreatorId, direction: 'DEBIT', type: 'REFUND', amountCents: netAmount, currency: intent.currency, sourceType: 'REFUND', sourceId: refund.id, idempotencyKey: `${refund.reference}:seller` } });
@@ -389,7 +407,7 @@ router.post('/payments/intents', requireAuth, async (req, res) => {
         await findPendingIntent(payerId, input.purpose, subscription.id, idempotencyKey.data);
         amountCents = profile.subscriptionPriceCents;
         currency = profile.currency;
-        metadata = { creatorId, subscriberId: payerId };
+        metadata = { creatorId, subscriberId: payerId, creatorRevenueSharePercent: String(await currentCreatorRevenueSharePercent()) };
         const intent = await makeIntent(payerId, input.purpose, subscription.id, amountCents, currency, metadata, idempotencyKey.data);
         return res.status(201).json({ paymentIntent: intent });
       }
@@ -404,7 +422,7 @@ router.post('/payments/intents', requireAuth, async (req, res) => {
       await findPendingIntent(payerId, input.purpose, subscription.id, idempotencyKey.data);
       amountCents = profile.subscriptionPriceCents;
       currency = profile.currency;
-      metadata = { creatorId, subscriberId: payerId };
+      metadata = { creatorId, subscriberId: payerId, creatorRevenueSharePercent: String(await currentCreatorRevenueSharePercent()) };
       const intent = await makeIntent(payerId, input.purpose, subscription.id, amountCents, currency, metadata, idempotencyKey.data);
       return res.status(201).json({ paymentIntent: intent });
     }

@@ -19,7 +19,6 @@ const creatorProfileSchema = z.object({
   category: z.string().trim().max(64).nullable().optional(),
   subscriptionPriceCents: z.number().int().min(0).max(10000000).optional(),
   currency: moneyCurrency.optional(),
-  isEnabled: z.boolean().optional(),
 });
 const businessSchema = z.object({
   name: z.string().trim().min(2).max(120),
@@ -230,10 +229,21 @@ router.get('/creators/me/earnings', requireAuth, async (req, res) => {
 });
 
 router.post('/creators/me/payouts', requireAuth, async (req, res) => {
-  const payload = z.object({ amountCents: z.number().int().positive() }).parse(req.body ?? {});
+  const payload = z.object({ amountCents: z.number().int().positive().max(100_000_000) }).parse(req.body ?? {});
   const idempotencyKey = z.string().trim().min(8).max(120).safeParse(req.header('Idempotency-Key'));
   if (!idempotencyKey.success) return res.status(400).json({ message: 'An Idempotency-Key header is required.' });
   const creatorId = req.user!.id;
+  const monetizationSettings = await isDatabaseAvailable()
+    ? await prisma.monetizationSettings.findUnique({ where: { id: 'default' } })
+    : commerceStore.state.monetizationSettings;
+  const minimumPayoutCents = Number(monetizationSettings?.minimumPayoutCents ?? 0);
+  if (payload.amountCents < minimumPayoutCents) return res.status(400).json({ message: `Payout requests must be at least ${minimumPayoutCents} cents.` });
+  if (monetizationSettings?.enabled) {
+    const approved = await isDatabaseAvailable()
+      ? Boolean(await prisma.creatorApplication.findFirst({ where: { creatorId, status: 'APPROVED' }, select: { id: true } }))
+      : commerceStore.state.creatorApplications.some((application) => application.creatorId === creatorId && application.status === 'APPROVED');
+    if (!approved) return res.status(403).json({ message: 'An approved creator monetization application is required for payouts.' });
+  }
   if (await isDatabaseAvailable()) {
     const profile = await prisma.creatorProfile.findUnique({ where: { userId: creatorId } });
     if (!profile) return res.status(404).json({ message: 'Creator profile not found.' });
@@ -298,6 +308,7 @@ router.patch(['/admin/creator-payouts/:id', '/admin/finance/payouts/:id'], requi
   const payoutId = String(req.params.id);
   const { status, reason, providerReference } = reviewResult.data;
   if (status === 'REJECTED' && !reason) return res.status(400).json({ message: 'A rejection reason is required.' });
+  if (status === 'PAID') return res.status(409).json({ message: 'No verified payout provider is configured; payment cannot be marked as paid.' });
   if (await isDatabaseAvailable()) {
     const payout = await prisma.creatorPayoutRequest.findUnique({ where: { id: payoutId } });
     if (!payout) return res.status(404).json({ message: 'Payout request not found.' });

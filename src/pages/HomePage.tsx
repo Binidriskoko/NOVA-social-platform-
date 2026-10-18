@@ -1,8 +1,9 @@
 import { ArrowRight, ChevronLeft, ChevronRight, Plus, Send, X } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { PostComposer } from '../components/PostComposer'
 import { PostCard } from '../components/PostCard'
+import { FeedAdSlot } from '../components/FeedAdSlot'
 import { Avatar } from '../components/ui/Avatar'
 import { useAuth } from '../context/AuthContext'
 import { apiRequest, resolveMediaUrl, uploadMedia } from '../lib/api'
@@ -447,12 +448,11 @@ export function HomePage() {
             ) : null}
 
             <div className="space-y-3">
-              {!loading && posts.map((post) => (
-                <PostCard
-                  key={post.id}
-                  post={post}
-                  onDeleted={(postId) => setPosts((current) => current.filter((item) => item.id !== postId))}
-                />
+              {!loading && posts.map((post, index) => (
+                <Fragment key={post.id}>
+                  <PostCard post={post} onDeleted={(postId) => setPosts((current) => current.filter((item) => item.id !== postId))} />
+                  {index === Math.min(3, posts.length - 1) ? <FeedAdSlot /> : null}
+                </Fragment>
               ))}
             </div>
           </main>

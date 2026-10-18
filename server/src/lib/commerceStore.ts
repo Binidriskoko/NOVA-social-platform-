@@ -23,6 +23,13 @@ type CommerceState = {
   financialLedger: CommerceRecord[];
   refunds: CommerceRecord[];
   financialDisputes: CommerceRecord[];
+  monetizationSettings: CommerceRecord | null;
+  creatorApplications: CommerceRecord[];
+  adNetworkSettings: CommerceRecord | null;
+  adPlacements: CommerceRecord[];
+  adCampaigns: CommerceRecord[];
+  adEvents: CommerceRecord[];
+  adConsents: CommerceRecord[];
 };
 
 const globalStore = globalThis as typeof globalThis & { __novaCommerceStore?: CommerceState };
@@ -49,6 +56,13 @@ function emptyState(): CommerceState {
     financialLedger: [],
     refunds: [],
     financialDisputes: [],
+    monetizationSettings: null,
+    creatorApplications: [],
+    adNetworkSettings: null,
+    adPlacements: [],
+    adCampaigns: [],
+    adEvents: [],
+    adConsents: [],
   };
 }
 

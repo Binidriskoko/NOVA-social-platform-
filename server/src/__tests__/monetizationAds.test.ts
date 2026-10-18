@@ -1,0 +1,153 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import request from 'supertest';
+import { app } from '../app.js';
+import { commerceStore } from '../lib/commerceStore.js';
+import { fallbackStore } from '../lib/fallbackStore.js';
+import { paymentWebhookSignature } from '../lib/paymentProviders.js';
+import { socialStore } from '../lib/socialStore.js';
+
+function cookie(response: { headers: Record<string, string | string[] | undefined> }) {
+  const value = response.headers['set-cookie'];
+  return Array.isArray(value) ? value.join('; ') : value ?? '';
+}
+
+async function register(name: string) {
+  const email = `${name.toLowerCase()}@example.com`;
+  const registered = await request(app).post('/api/auth/register').send({ name, email, password: 'Password123', communityRulesAccepted: true });
+  expect(registered.status).toBe(201);
+  const login = await request(app).post('/api/auth/login').send({ email, password: 'Password123' });
+  return { user: registered.body.user, auth: cookie(login) };
+}
+
+describe('creator monetization and internal advertising', () => {
+  beforeEach(() => { fallbackStore.clear(); socialStore.clear(); commerceStore.clear(); });
+
+  it('enforces configurable eligibility and reviews creator applications with admin-only approval', async () => {
+    const creator = await register('Applicant');
+    const admin = await register('ReviewAdmin');
+    const outsider = await register('RegularUser');
+    fallbackStore.updateUser(admin.user.id, { role: 'ADMIN' });
+
+    const locked = await request(app).get('/api/creators/me/monetization').set('Cookie', creator.auth);
+    expect(locked.status).toBe(200);
+    expect(locked.body.metrics.qualifiedViews).toBeNull();
+    expect(locked.body.eligible).toBe(false);
+    expect((await request(app).post('/api/creators/me/monetization/applications').set('Cookie', creator.auth).send({})).status).toBe(409);
+
+    const settings = {
+      enabled: true,
+      minimumFollowers: 0,
+      minimumQualifiedViews: 1,
+      qualifiedViewWindowDays: 7,
+      minimumWatchTimeSeconds: 0,
+      minimumEngagementRate: 0,
+      minimumAccountAgeDays: 0,
+      minimumPublicPosts: 0,
+      revenueSharePercent: 75,
+      minimumPayoutCents: 100,
+    };
+    expect((await request(app).patch('/api/admin/monetization/settings').set('Cookie', outsider.auth).send(settings)).status).toBe(403);
+    expect((await request(app).patch('/api/admin/monetization/settings').set('Cookie', admin.auth).send(settings)).status).toBe(200);
+    const unavailableViews = await request(app).get('/api/creators/me/monetization').set('Cookie', creator.auth);
+    expect(unavailableViews.body.requirements.find((item: { key: string }) => item.key === 'qualifiedViews').met).toBe(false);
+
+    expect((await request(app).patch('/api/admin/monetization/settings').set('Cookie', admin.auth).send({ minimumQualifiedViews: 0 })).status).toBe(200);
+    const application = await request(app).post('/api/creators/me/monetization/applications').set('Cookie', creator.auth).send({ reason: 'I create original public posts.' });
+    expect(application.status).toBe(201);
+    expect((await request(app).post('/api/creators/me/monetization/applications').set('Cookie', creator.auth).send({})).status).toBe(409);
+    expect((await request(app).get('/api/admin/monetization/applications').set('Cookie', outsider.auth)).status).toBe(403);
+
+    const selfReview = await request(app).patch(`/api/admin/monetization/applications/${application.body.application.id}`).set('Cookie', creator.auth).send({ status: 'APPROVED', reason: 'Attempted self approval' });
+    expect(selfReview.status).toBe(403);
+    const approved = await request(app).patch(`/api/admin/monetization/applications/${application.body.application.id}`).set('Cookie', admin.auth).send({ status: 'APPROVED', reason: 'Eligibility verified.' });
+    expect(approved.status).toBe(200);
+    expect((await request(app).get('/api/creators/me/monetization').set('Cookie', creator.auth)).body.active).toBe(true);
+    expect(fallbackStore.listAdminActions().some((entry) => entry.actionType === 'CREATOR_APPLICATION_APPROVED')).toBe(true);
+    expect((await request(app).patch(`/api/admin/monetization/creators/${creator.user.id}/status`).set('Cookie', admin.auth).send({ status: 'SUSPENDED', reason: 'Policy review.' })).status).toBe(200);
+    await request(app).put('/api/creators/me/profile').set('Cookie', creator.auth).send({ isEnabled: true });
+    expect((await request(app).get('/api/creators/me/monetization').set('Cookie', creator.auth)).body.active).toBe(false);
+    expect((await request(app).patch(`/api/admin/monetization/creators/${creator.user.id}/status`).set('Cookie', creator.auth).send({ status: 'ACTIVE', reason: 'Self reactivation' })).status).toBe(403);
+    expect((await request(app).patch(`/api/admin/monetization/creators/${creator.user.id}/status`).set('Cookie', admin.auth).send({ status: 'ACTIVE', reason: 'Review completed.' })).status).toBe(200);
+    await request(app).put('/api/creators/me/profile').set('Cookie', creator.auth).send({ subscriptionPriceCents: 1000 });
+    const subscription = await request(app).post(`/api/creators/${creator.user.id}/subscribe`).set('Cookie', outsider.auth);
+    const event = { eventId: 'monetization-share-event', reference: subscription.body.paymentIntent.reference, status: 'SUCCESS' as const, providerReference: 'provider-share-ref' };
+    const webhook = () => request(app).post('/api/payments/webhooks/manual').set('x-payment-signature', paymentWebhookSignature('manual', event)).send(event);
+    expect((await webhook()).status).toBe(200);
+    expect((await webhook()).status).toBe(200);
+    expect((await request(app).get('/api/creators/me/earnings').set('Cookie', creator.auth)).body.balanceCents).toBe(750);
+  });
+
+  it('requires consent, validates campaign events once, enforces transitions, and keeps ads out of private placements', async () => {
+    const admin = await register('AdsAdmin');
+    const advertiser = await register('Advertiser');
+    const viewer = await register('AdViewer');
+    fallbackStore.updateUser(admin.user.id, { role: 'ADMIN' });
+
+    expect((await request(app).put('/api/admin/ads/placements/private-messages').set('Cookie', admin.auth).send({ enabled: true, dailyBudgetCents: 10 })).status).toBe(400);
+    expect((await request(app).put('/api/admin/ads/placements/feed').set('Cookie', admin.auth).send({ enabled: true, dailyBudgetCents: 1000 })).status).toBe(200);
+    expect((await request(app).patch('/api/admin/ads/settings').set('Cookie', admin.auth).send({ enabled: true })).status).toBe(200);
+
+    const startsAt = new Date(Date.now() - 1000).toISOString();
+    const endsAt = new Date(Date.now() + 60_000).toISOString();
+    const created = await request(app).post('/api/ads/campaigns').set('Cookie', advertiser.auth).send({
+      name: 'Feed campaign',
+      placement: 'feed',
+      creativeUrl: 'https://cdn.example.test/creative.png',
+      destinationUrl: 'https://advertiser.example.test/offer',
+      startsAt,
+      endsAt,
+      totalBudgetCents: 100,
+      dailyBudgetCents: 50,
+      costPerImpressionCents: 1,
+      costPerClickCents: 2,
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.campaign.status).toBe('DRAFT');
+    expect((await request(app).post(`/api/ads/campaigns/${created.body.campaign.id}/submit`).set('Cookie', advertiser.auth)).status).toBe(200);
+    expect((await request(app).patch(`/api/admin/ads/campaigns/${created.body.campaign.id}`).set('Cookie', advertiser.auth).send({ status: 'APPROVED', reason: 'No self review' })).status).toBe(403);
+    expect((await request(app).patch(`/api/admin/ads/campaigns/${created.body.campaign.id}`).set('Cookie', admin.auth).send({ status: 'APPROVED', reason: 'Creative checked.' })).body.campaign.status).toBe('ACTIVE');
+
+    expect((await request(app).get('/api/ads/placements/feed').set('Cookie', viewer.auth)).body.campaign).toBeNull();
+    await request(app).put('/api/ads/consent').set('Cookie', viewer.auth).send({ consented: true });
+    const firstDelivery = await request(app).get('/api/ads/placements/feed').set('Cookie', viewer.auth);
+    expect(firstDelivery.body.campaign.impressionId).toBeTruthy();
+    const repeatedDelivery = await request(app).get('/api/ads/placements/feed').set('Cookie', viewer.auth);
+    expect(repeatedDelivery.body.campaign.impressionId).toBe(firstDelivery.body.campaign.impressionId);
+    expect(commerceStore.state.adEvents.filter((event) => event.eventType === 'IMPRESSION')).toHaveLength(1);
+
+    const invalidClick = await request(app).post(`/api/ads/campaigns/${created.body.campaign.id}/events`).set('Cookie', viewer.auth).send({ eventType: 'CLICK', impressionId: 'forged' });
+    expect(invalidClick.status).toBe(409);
+    const validClick = await request(app).post(`/api/ads/campaigns/${created.body.campaign.id}/events`).set('Cookie', viewer.auth).send({ eventType: 'CLICK', impressionId: firstDelivery.body.campaign.impressionId });
+    expect(validClick.status).toBe(201);
+    const duplicateClick = await request(app).post(`/api/ads/campaigns/${created.body.campaign.id}/events`).set('Cookie', viewer.auth).send({ eventType: 'CLICK', impressionId: firstDelivery.body.campaign.impressionId });
+    expect(duplicateClick.status).toBe(200);
+    expect(commerceStore.state.adEvents.filter((event) => event.eventType === 'CLICK')).toHaveLength(1);
+
+    expect((await request(app).patch(`/api/admin/ads/campaigns/${created.body.campaign.id}`).set('Cookie', admin.auth).send({ status: 'PAUSED', reason: 'Review requested.' })).body.campaign.status).toBe('PAUSED');
+    expect((await request(app).get('/api/ads/placements/feed').set('Cookie', viewer.auth)).body.campaign).toBeNull();
+    expect((await request(app).patch(`/api/admin/ads/campaigns/${created.body.campaign.id}`).set('Cookie', admin.auth).send({ status: 'RESUMED', reason: 'Review complete.' })).body.campaign.status).toBe('ACTIVE');
+    expect((await request(app).get('/api/admin/ads/analytics').set('Cookie', viewer.auth)).status).toBe(403);
+    expect((await request(app).get('/api/admin/ads/analytics').set('Cookie', admin.auth)).body.analytics).toEqual({ impressions: 1, clicks: 1, spendCents: 3 });
+  });
+
+  it('keeps payouts idempotent, enforces the configured minimum, and blocks unverified paid transitions', async () => {
+    const creator = await register('PayoutCreator');
+    const admin = await register('PayoutAdmin');
+    fallbackStore.updateUser(admin.user.id, { role: 'ADMIN' });
+    await request(app).put('/api/creators/me/profile').set('Cookie', creator.auth).send({ subscriptionPriceCents: 1000 });
+    commerceStore.state.creatorLedger.push({ id: 'seeded-ledger-test', creatorId: creator.user.id, type: 'SUBSCRIPTION', amountCents: 1000, currency: 'USD', createdAt: new Date() });
+    await request(app).patch('/api/admin/monetization/settings').set('Cookie', admin.auth).send({ minimumPayoutCents: 500 });
+    const tooSmall = await request(app).post('/api/creators/me/payouts').set('Cookie', creator.auth).set('Idempotency-Key', 'payout-too-small-1').send({ amountCents: 499 });
+    expect(tooSmall.status).toBe(400);
+
+    const payout = await request(app).post('/api/creators/me/payouts').set('Cookie', creator.auth).set('Idempotency-Key', 'payout-test-key-1').send({ amountCents: 500 });
+    expect(payout.status).toBe(201);
+    expect((await request(app).post('/api/creators/me/payouts').set('Cookie', creator.auth).set('Idempotency-Key', 'payout-test-key-1').send({ amountCents: 500 })).status).toBe(200);
+    expect((await request(app).patch(`/api/admin/finance/payouts/${payout.body.payout.id}`).set('Cookie', admin.auth).send({ status: 'FAILED', reason: 'Invalid transition' })).status).toBe(409);
+    expect((await request(app).patch(`/api/admin/finance/payouts/${payout.body.payout.id}`).set('Cookie', admin.auth).send({ status: 'APPROVED', reason: 'Validated request' })).status).toBe(200);
+    expect((await request(app).patch(`/api/admin/finance/payouts/${payout.body.payout.id}`).set('Cookie', admin.auth).send({ status: 'PROCESSING', reason: 'Manual review started' })).status).toBe(200);
+    const paid = await request(app).patch(`/api/admin/finance/payouts/${payout.body.payout.id}`).set('Cookie', admin.auth).send({ status: 'PAID', providerReference: 'unverified-reference', reason: 'Attempted manual completion' });
+    expect(paid.status).toBe(409);
+    expect(commerceStore.state.creatorPayouts.find((entry) => entry.id === payout.body.payout.id)?.status).toBe('PROCESSING');
+  });
+});

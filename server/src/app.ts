@@ -14,6 +14,7 @@ import { communitiesRouter } from './routes/communities.js';
 import { creatorBusinessMarketplaceRouter } from './routes/creatorBusinessMarketplace.js';
 import { healthRouter } from './routes/health.js';
 import { messagesRouter } from './routes/messages.js';
+import { monetizationAdsRouter } from './routes/monetizationAds.js';
 import { mediaRouter } from './routes/media.js';
 import { paymentsRouter } from './routes/payments.js';
 import { socialRouter } from './routes/social.js';
@@ -106,6 +107,7 @@ app.use('/api', subscriptionRouter);
 app.use('/api', socialRouter);
 app.use('/api', command2aRouter);
 app.use('/api', creatorBusinessMarketplaceRouter);
+app.use('/api', monetizationAdsRouter);
 
 app.get('/', (_req, res) => {
   res.json({ name: 'NOVA Social Platform API', status: 'online' });

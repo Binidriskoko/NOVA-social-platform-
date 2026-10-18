@@ -122,8 +122,7 @@ async function notifyLiveAudience(liveId: string, hostId: string, hostName: stri
       select: { followerId: true, followingId: true },
     });
     for (const follow of follows) {
-      const userId = follow.followerId === hostId ? follow.followingId : follow.followerId;
-      if (userId !== hostId) audienceIds.add(userId);
+      if (follow.followingId === hostId && follow.followerId !== hostId) audienceIds.add(follow.followerId);
     }
     if (!audienceIds.size) return;
     const recipients = await prisma.user.findMany({
@@ -152,12 +151,11 @@ async function notifyLiveAudience(liveId: string, hostId: string, hostName: stri
   }
 
   for (const follow of socialStore.state.follows) {
-    if (follow.followerId === hostId) audienceIds.add(follow.followingId);
     if (follow.followingId === hostId) audienceIds.add(follow.followerId);
   }
   await Promise.all([...audienceIds].filter((recipientId) => {
     const recipient = findUserById(recipientId);
-    return recipient && recipientId !== hostId && recipient.status !== 'SUSPENDED' && recipient.status !== 'BANNED'
+    return recipient?.status === 'ACTIVE' && recipientId !== hostId
       && !socialStore.state.blocks.some((block) =>
         (block.blockerId === hostId && block.blockedId === recipientId)
         || (block.blockerId === recipientId && block.blockedId === hostId),

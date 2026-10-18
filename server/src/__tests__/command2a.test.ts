@@ -1,13 +1,32 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
+import { TrackSource } from 'livekit-server-sdk';
 import { app } from '../app.js';
 import { fallbackStore } from '../lib/fallbackStore.js';
+import { getLiveKitParticipants } from '../lib/livekit.js';
 import { clearCommand2AStores } from '../lib/platform.js';
 import { socialStore } from '../lib/socialStore.js';
+
+vi.mock('../lib/livekit.js', async (importOriginal) => {
+  const livekit = await importOriginal<typeof import('../lib/livekit.js')>();
+  return { ...livekit, getLiveKitParticipants: vi.fn() };
+});
 
 function getCookieHeader(response: { headers: Record<string, string | string[] | undefined> }) {
   const value = response.headers['set-cookie'];
   return Array.isArray(value) ? value.join('; ') : (value ?? '');
+}
+
+async function register(name: string) {
+  const email = `${name.toLowerCase()}@example.com`;
+  await request(app).post('/api/auth/register').send({
+    name,
+    email,
+    password: 'Password123',
+    communityRulesAccepted: true,
+  });
+  const login = await request(app).post('/api/auth/login').send({ email, password: 'Password123' });
+  return { auth: getCookieHeader(login), user: login.body.user as { id: string } };
 }
 
 describe('command 2a foundation', () => {
@@ -67,6 +86,33 @@ describe('command 2a foundation', () => {
     expect(notifications.body.unreadCount).toBeGreaterThanOrEqual(1);
     expect(notifications.body.notifications.length).toBeGreaterThan(0);
   });
+
+  it('notifies only followers when a public live broadcast starts', async () => {
+    const host = await register('LiveHost');
+    const follower = await register('LiveFollower');
+    const followedByHostId = 'user-only-followed-by-host';
+    const now = new Date().toISOString();
+    socialStore.state.follows.push(
+      { id: 'follower-to-host', followerId: follower.user.id, followingId: host.user.id, createdAt: now },
+      { id: 'host-to-followed', followerId: host.user.id, followingId: followedByHostId, createdAt: now },
+    );
+    vi.mocked(getLiveKitParticipants).mockResolvedValue([{
+      identity: host.user.id,
+      tracks: [
+        { source: TrackSource.CAMERA, muted: false },
+        { source: TrackSource.MICROPHONE, muted: false },
+      ],
+    } as Awaited<ReturnType<typeof getLiveKitParticipants>>[number]]);
+
+    const created = await request(app).post('/api/live/create').set('Cookie', host.auth).send({ title: 'Follower notification test' });
+    const started = await request(app).post(`/api/live/${created.body.live.id}/start`).set('Cookie', host.auth);
+
+    expect(started.status).toBe(200);
+    const followerNotifications = await request(app).get('/api/notifications').set('Cookie', follower.auth);
+    expect(followerNotifications.body.notifications.some((notification: { type: string }) => notification.type === 'live_started')).toBe(true);
+    expect(socialStore.state.notifications.filter((notification) => notification.type === 'live_started').map((notification) => notification.recipientId))
+      .toEqual([follower.user.id]);
+  }, 15_000);
 
   it('persists notification category preferences through the API', async () => {
     await request(app).post('/api/auth/register').send({

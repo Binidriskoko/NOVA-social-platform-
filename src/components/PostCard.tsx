@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Bookmark, MessageCircle, PencilLine, Share2, ShieldAlert, ThumbsUp, Trash2 } from 'lucide-react'
 import { Avatar } from './ui/Avatar'
@@ -40,6 +40,7 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
   const [replyToId, setReplyToId] = useState<string | null>(null)
   const [commentsOpen, setCommentsOpen] = useState(false)
   const [commentsLoading, setCommentsLoading] = useState(false)
+  const commentsRequestInFlight = useRef(false)
   const [content, setContent] = useState(post.content)
   const [imageUrl, setImageUrl] = useState(post.image ?? '')
   const [visibility, setVisibility] = useState<Post['visibility']>(post.visibility ?? 'PUBLIC')
@@ -91,6 +92,8 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
   }
 
   const loadComments = async () => {
+    if (commentsRequestInFlight.current) return
+    commentsRequestInFlight.current = true
     setCommentsLoading(true)
     setError('')
     try {
@@ -100,6 +103,7 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
       setError(loadError instanceof Error ? loadError.message : 'Unable to load comments.')
     } finally {
       setCommentsLoading(false)
+      commentsRequestInFlight.current = false
     }
   }
 

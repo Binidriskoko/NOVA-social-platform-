@@ -13,7 +13,16 @@
     <title>NOVAKOKO</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main aria-label="NOVAKOKO startup" style="min-height:100vh;background:#f8fafc;color:#0f172a;font-family:system-ui,sans-serif">
+        <header style="display:flex;height:56px;align-items:center;border-bottom:1px solid #e2e8f0;background:#fff;padding:0 20px;font-size:14px;font-weight:700;color:#1e40af">NOVAKOKO</header>
+        <div style="margin:0 auto;max-width:1280px;padding:24px 16px">
+          <div style="height:20px;width:112px;border-radius:6px;background:#e2e8f0"></div>
+          <div style="margin-top:20px;height:96px;border-radius:8px;background:#fff;box-shadow:0 0 0 1px #e2e8f0"></div>
+          <p role="status" style="margin-top:16px;font-size:12px;color:#64748b">Starting NOVAKOKO…</p>
+        </div>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

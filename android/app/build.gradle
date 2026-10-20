@@ -1,6 +1,13 @@
 apply plugin: 'com.android.application'
 
 def releaseKeystorePath = System.getenv('ANDROID_KEYSTORE_PATH')
+def releaseSigningEnvironment = [
+    ANDROID_KEYSTORE_PATH: releaseKeystorePath,
+    ANDROID_KEYSTORE_PASSWORD: System.getenv('ANDROID_KEYSTORE_PASSWORD'),
+    ANDROID_KEY_ALIAS: System.getenv('ANDROID_KEY_ALIAS'),
+    ANDROID_KEY_PASSWORD: System.getenv('ANDROID_KEY_PASSWORD'),
+]
+def expectedReleaseCertificateFingerprint = 'C81B2766C700A37A096C7A26F4F92DA73480F55F6221D1C660AC90F4508007DE'
 
 android {
     namespace "com.novakoko.app"
@@ -35,6 +42,31 @@ android {
                 signingConfig signingConfigs.release
             }
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+tasks.configureEach { task ->
+    if (task.name in ['assembleRelease', 'bundleRelease']) {
+        task.doFirst {
+            def missingSigningValues = releaseSigningEnvironment.findAll { name, value -> !value }.keySet()
+            if (!missingSigningValues.isEmpty()) {
+                throw new GradleException("Refusing an unsigned Android release. Missing: ${missingSigningValues.join(', ')}")
+            }
+            if (!file(releaseKeystorePath).isFile()) {
+                throw new GradleException('ANDROID_KEYSTORE_PATH must point to the existing release keystore.')
+            }
+            def certificateOutput = new ByteArrayOutputStream()
+            exec {
+                commandLine 'keytool', '-list', '-v', '-keystore', releaseKeystorePath,
+                    '-storepass:env', 'ANDROID_KEYSTORE_PASSWORD', '-alias', System.getenv('ANDROID_KEY_ALIAS')
+                standardOutput = certificateOutput
+            }
+            def fingerprintMatcher = certificateOutput.toString('UTF-8') =~ /(?m)^SHA256:\s*([0-9A-Fa-f:]+)\s*$/
+            if (!fingerprintMatcher.find()
+                || fingerprintMatcher.group(1).replace(':', '').toUpperCase() != expectedReleaseCertificateFingerprint) {
+                throw new GradleException('Signing certificate does not match the pinned release certificate.')
+            }
         }
     }
 }

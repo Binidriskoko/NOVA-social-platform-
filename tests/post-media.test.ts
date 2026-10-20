@@ -1,6 +1,9 @@
 import { isVideoPostMediaUrl, postMediaFileType, POST_IMAGE_MAX_BYTES, POST_VIDEO_MAX_BYTES, validatePostMediaFile } from '../src/lib/postMedia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { sidebarItems } from '../src/components/AppShell'
+import { PostMedia } from '../src/components/PostMedia'
 import { uploadVideo } from '../src/lib/api'
 import { canonicalPostUrl, sharePostLink } from '../src/lib/postSharing'
 
@@ -33,6 +36,19 @@ describe('post media selection and video navigation', () => {
   it('routes Videos in the main navigation instead of showing a standalone Create destination', () => {
     expect(sidebarItems.some(({ label, path }) => label === 'Videos' && path === '/videos')).toBe(true)
     expect(sidebarItems.some(({ label, path }) => label === 'Create' || path === '/create')).toBe(false)
+  })
+
+  it('lazy-loads images and does not autoplay or fetch uploaded videos before requested', () => {
+    const imageMarkup = renderToStaticMarkup(createElement(PostMedia, { url: 'https://cdn.example.test/photo.jpg' }))
+    const externalVideoMarkup = renderToStaticMarkup(createElement(PostMedia, { url: 'https://cdn.example.test/clip.mp4' }))
+    const uploadedVideoMarkup = renderToStaticMarkup(createElement(PostMedia, { url: '/api/media/files/clip.mp4' }))
+
+    expect(imageMarkup).toContain('loading="lazy"')
+    expect(imageMarkup).toContain('decoding="async"')
+    expect(externalVideoMarkup).toContain('preload="none"')
+    expect(externalVideoMarkup).not.toContain('autoplay')
+    expect(uploadedVideoMarkup).toContain('Load video')
+    expect(uploadedVideoMarkup).not.toContain('<video')
   })
 
   it('reports upload progress and completes only after the video upload API confirms success', async () => {

@@ -1,13 +1,16 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import { App } from '@capacitor/app'
 import { Archive, ArrowLeft, CalendarDays, Camera, Check, CheckCheck, FileText, Image, Images, ListChecks, MapPin, Mic, MoreVertical, Paperclip, Phone, Pin, Plus, Search, SendHorizontal, Shield, Smile, Square, Star, UsersRound, UserPlus, Video, VolumeX, X } from 'lucide-react'
 import { Avatar } from '../components/ui/Avatar'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { useAuth } from '../context/AuthContext'
-import { apiRequest, fetchMediaBlob, resolveMediaUrl, uploadMedia, uploadMessageAttachment, uploadVideo } from '../lib/api'
+import { ApiError, apiRequest, resolveMediaUrl, uploadMedia, uploadMessageAttachment, uploadVideo } from '../lib/api'
 import { openAuthenticatedEventStream } from '../lib/eventStream'
 import { updateConversationPreviewFromMessage, upsertMessageById } from '../lib/messageList'
+import { clearCachedRead, getCachedRead, setCachedRead } from '../lib/readCache'
+import { useAuthenticatedMediaBlob } from '../lib/useAuthenticatedMediaBlob'
 
 type ConversationParticipant = { userId: string; role?: string; user?: { id: string; name: string; avatar?: string } }
 type ConversationListItem = {
@@ -50,36 +53,31 @@ type MessageItem = {
 type DirectoryUser = { id: string; name: string }
 
 function MessageMediaAttachment({ message, isOwn }: { message: MessageItem; isOwn: boolean }) {
-  const [loadedMedia, setLoadedMedia] = useState<{ url: string; source: string; error: string }>({ url: '', source: '', error: '' })
   const mediaUrl = message.mediaUrl ?? ''
   const isUploaded = mediaUrl.startsWith('/api/media/')
-
-  useEffect(() => {
-    if (!isUploaded) return
-    const controller = new AbortController()
-    let objectUrl = ''
-    void fetchMediaBlob(mediaUrl, controller.signal).then((blob) => {
-      if (controller.signal.aborted) return
-      objectUrl = URL.createObjectURL(blob)
-      setLoadedMedia({ url: mediaUrl, source: objectUrl, error: '' })
-    }).catch((loadError: unknown) => {
-      if (!controller.signal.aborted) {
-        setLoadedMedia({ url: mediaUrl, source: '', error: loadError instanceof Error ? loadError.message : 'Unable to load this attachment.' })
-      }
-    })
-    return () => {
-      controller.abort()
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
-    }
-  }, [isUploaded, mediaUrl])
-
-  const matchesLoaded = loadedMedia.url === mediaUrl
-  const source = isUploaded ? matchesLoaded ? loadedMedia.source : '' : resolveMediaUrl(mediaUrl)
-  if (isUploaded && !matchesLoaded) return <p className="mb-2 text-xs text-slate-500">Loading attachment…</p>
-  if (matchesLoaded && loadedMedia.error) return <p className="mb-2 text-xs text-rose-700" role="alert">{loadedMedia.error}</p>
+  const [requestedUrl, setRequestedUrl] = useState('')
+  const requested = requestedUrl === mediaUrl
+  const media = useAuthenticatedMediaBlob(mediaUrl, isUploaded && (message.contentType === 'IMAGE' || requested))
+  const source = isUploaded ? media.source : resolveMediaUrl(mediaUrl)
+  if (isUploaded && !requested && message.contentType !== 'IMAGE') {
+    return <div ref={media.containerRef} className="mb-2">
+      <button type="button" onClick={() => setRequestedUrl(mediaUrl)} className={`text-xs font-semibold underline ${isOwn ? 'text-white' : 'text-indigo-700'}`}>
+        Load {message.contentType?.toLowerCase() ?? 'message'} attachment
+      </button>
+    </div>
+  }
+  if (isUploaded && media.error) {
+    return <div ref={media.containerRef} className="mb-2">
+      <p className="text-xs text-rose-700" role="alert">{media.error}</p>
+      <button type="button" onClick={media.retry} className="mt-1 text-xs font-semibold underline">Retry attachment</button>
+    </div>
+  }
+  if (isUploaded && !source) {
+    return <div ref={media.containerRef} className="mb-2 text-xs text-slate-500" role="status">Attachment will load when needed.</div>
+  }
   if (!source) return null
-  if (message.contentType === 'IMAGE') return <a href={source} target="_blank" rel="noreferrer"><img src={source} alt="Message attachment" className="mb-2 max-h-64 rounded-xl object-cover" /></a>
-  if (message.contentType === 'VIDEO') return <video controls src={source} className="mb-2 max-h-64 rounded-xl" />
+  if (message.contentType === 'IMAGE') return <a href={source} target="_blank" rel="noreferrer"><img src={source} alt="Message attachment" loading="lazy" decoding="async" className="mb-2 max-h-64 rounded-xl object-cover" /></a>
+  if (message.contentType === 'VIDEO') return <video controls preload="none" src={source} className="mb-2 max-h-64 rounded-xl" />
   if (message.contentType === 'VOICE') return <audio controls src={source} className="mb-2 max-w-full" />
   if (message.contentType === 'DOCUMENT') {
     const filename = mediaUrl.toLowerCase().endsWith('.pdf') ? 'attachment.pdf' : 'attachment.docx'
@@ -93,19 +91,25 @@ function MessageMediaAttachment({ message, isOwn }: { message: MessageItem; isOw
 
 export function MessagesPage() {
   const { user } = useAuth()
+  const conversationsCacheKey = user?.id ? JSON.stringify(['conversations', user.id]) : ''
+  const cachedConversations = conversationsCacheKey
+    ? getCachedRead<ConversationListItem[]>(conversationsCacheKey)
+    : undefined
   const [searchParams, setSearchParams] = useSearchParams()
-  const [conversations, setConversations] = useState<ConversationListItem[]>([])
+  const [conversations, setConversations] = useState<ConversationListItem[]>(() => cachedConversations ?? [])
+  const conversationsRequestRef = useRef<{ key: string; controller: AbortController } | null>(null)
   const [selectedId, setSelectedId] = useState('')
+  const closeConversation = useCallback(() => setSelectedId(''), [])
   const selectedIdRef = useRef(selectedId)
   const userIdRef = useRef(user?.id)
-  useEffect(() => {
-    selectedIdRef.current = selectedId
-    userIdRef.current = user?.id
-  }, [selectedId, user?.id])
+  selectedIdRef.current = selectedId
+  userIdRef.current = user?.id
   const [messages, setMessages] = useState<MessageItem[]>([])
   const [draft, setDraft] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!cachedConversations)
   const [messagesLoading, setMessagesLoading] = useState(false)
+  const [messagesStale, setMessagesStale] = useState(false)
+  const [messagesLoadFailed, setMessagesLoadFailed] = useState(false)
   const [error, setError] = useState('')
   const [sending, setSending] = useState(false)
   const [sendFailed, setSendFailed] = useState(false)
@@ -133,6 +137,7 @@ export function MessagesPage() {
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([])
   const [directory, setDirectory] = useState<DirectoryUser[]>([])
   const [directoryLoading, setDirectoryLoading] = useState(false)
+  const directoryRequestInFlight = useRef(false)
   const [directoryError, setDirectoryError] = useState('')
   const [hasMore, setHasMore] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
@@ -197,21 +202,51 @@ export function MessagesPage() {
     if (mediaPreviewUrlRef.current) URL.revokeObjectURL(mediaPreviewUrlRef.current)
   }, [])
 
-  const loadConversations = async () => {
+  const loadConversations = useCallback(async () => {
+    const requestUserId = user?.id
+    const cacheKey = requestUserId ? JSON.stringify(['conversations', requestUserId]) : ''
+    if (conversationsRequestRef.current?.key === cacheKey
+      && !conversationsRequestRef.current.controller.signal.aborted) return
+    conversationsRequestRef.current?.controller.abort()
+    const controller = new AbortController()
+    const request = { key: cacheKey, controller }
+    conversationsRequestRef.current = request
+    if (!cacheKey || !getCachedRead<ConversationListItem[]>(cacheKey)) setLoading(true)
+    setError('')
     try {
-      setLoading(true)
-      setError('')
-      const response = await apiRequest<{ conversations: ConversationListItem[] }>('/api/conversations')
+      const response = await apiRequest<{ conversations: ConversationListItem[] }>('/api/conversations', { signal: controller.signal })
+      if (controller.signal.aborted || userIdRef.current !== requestUserId) return
       setConversations(response.conversations)
-      setSelectedId((current) => current || (window.matchMedia('(min-width: 1024px)').matches ? response.conversations[0]?.id ?? '' : ''))
+      if (cacheKey) setCachedRead(cacheKey, response.conversations)
+      setSelectedId((current) => response.conversations.some((conversation) => conversation.id === current)
+        ? current
+        : (window.matchMedia('(min-width: 1024px)').matches ? response.conversations[0]?.id ?? '' : ''))
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Unable to load conversations.')
+      if (!controller.signal.aborted && userIdRef.current === requestUserId) {
+        if (loadError instanceof ApiError && [401, 403].includes(loadError.status ?? 0)) {
+          if (cacheKey) clearCachedRead(cacheKey)
+          setConversations([])
+          setSelectedId('')
+        }
+        setError(loadError instanceof Error ? loadError.message : 'Unable to load conversations.')
+      }
     } finally {
-      setLoading(false)
+      if (conversationsRequestRef.current === request) {
+        setLoading(false)
+        conversationsRequestRef.current = null
+      }
     }
-  }
+  }, [user?.id])
 
-  useEffect(() => { void loadConversations() }, [])
+  useEffect(() => {
+    const savedConversations = conversationsCacheKey
+      ? getCachedRead<ConversationListItem[]>(conversationsCacheKey)
+      : undefined
+    setConversations(savedConversations ?? [])
+    setLoading(!savedConversations)
+    void loadConversations()
+    return () => conversationsRequestRef.current?.controller.abort()
+  }, [conversationsCacheKey, loadConversations])
 
   useEffect(() => {
     const conversationId = searchParams.get('conversationId')
@@ -255,31 +290,99 @@ export function MessagesPage() {
     return () => source.close()
   }, [])
 
+  const loadConversationMessages = useCallback(async (conversationId: string, signal?: AbortSignal) => {
+    const requestUserId = user?.id
+    const cacheKey = requestUserId ? JSON.stringify(['messages', requestUserId, conversationId]) : ''
+    const cached = cacheKey ? getCachedRead<{ messages: MessageItem[]; hasMore: boolean }>(cacheKey) : undefined
+    const requestIsCurrent = () => selectedIdRef.current === conversationId && userIdRef.current === requestUserId
+    try {
+      setMessagesLoading(!cached)
+      setMessagesLoadFailed(false)
+      setError('')
+      const response = await apiRequest<{ messages: MessageItem[]; hasMore: boolean }>(
+        `/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=50`,
+        { signal },
+      )
+      if (signal?.aborted || !requestIsCurrent()) return
+      setMessages(response.messages)
+      setHasMore(response.hasMore)
+      setMessagesStale(false)
+      if (cacheKey) setCachedRead(cacheKey, response)
+      void apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/read`, {
+        method: 'POST',
+        signal,
+      }).catch((readError: unknown) => {
+        if (!signal?.aborted && requestIsCurrent()) {
+          setError(readError instanceof Error ? readError.message : 'Unable to update message read status.')
+        }
+      })
+    } catch (loadError) {
+      if (signal?.aborted || !requestIsCurrent()) return
+      const isOffline = loadError instanceof ApiError
+        && (loadError.code === 'NETWORK_ERROR' || loadError.code === 'TIMEOUT')
+      if (isOffline && cached) {
+        setMessages(cached.messages)
+        setHasMore(cached.hasMore)
+        setMessagesStale(true)
+        setError('Connection unavailable. Showing saved messages, which may be out of date.')
+      } else {
+        if (loadError instanceof ApiError && [401, 403].includes(loadError.status ?? 0)) {
+          if (cacheKey) clearCachedRead(cacheKey)
+          setMessages([])
+          setMessagesStale(false)
+        }
+        setError(loadError instanceof Error ? loadError.message : 'Unable to load messages.')
+      }
+      setMessagesLoadFailed(true)
+    } finally {
+      if (!signal?.aborted && requestIsCurrent()) setMessagesLoading(false)
+    }
+  }, [user?.id])
+
   useEffect(() => {
     if (!selectedId) {
       setMessages([])
+      setMessagesStale(false)
+      setMessagesLoadFailed(false)
       return
     }
 
-    const loadMessages = async () => {
-      try {
-        setMessagesLoading(true)
-        setError('')
-        const response = await apiRequest<{ messages: MessageItem[]; hasMore: boolean }>(`/api/conversations/${encodeURIComponent(selectedId)}/messages?limit=50`)
-        setMessages(response.messages)
-        setHasMore(response.hasMore)
-        await apiRequest(`/api/conversations/${encodeURIComponent(selectedId)}/read`, { method: 'POST' })
-      } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : 'Unable to load messages.')
-      } finally {
-        setMessagesLoading(false)
-      }
+    const cacheKey = user?.id ? JSON.stringify(['messages', user.id, selectedId]) : ''
+    const cached = cacheKey ? getCachedRead<{ messages: MessageItem[]; hasMore: boolean }>(cacheKey) : undefined
+    if (cached) {
+      setMessages(cached.messages)
+      setHasMore(cached.hasMore)
+      setMessagesStale(false)
+    } else {
+      setMessages([])
+      setMessagesStale(false)
     }
+    const controller = new AbortController()
+    void loadConversationMessages(selectedId, controller.signal)
+    return () => controller.abort()
+  }, [loadConversationMessages, selectedId, user?.id])
 
-    void loadMessages()
-  }, [selectedId])
+  useEffect(() => {
+    if (!selectedId) return
+
+    let active = true
+    let listener: Awaited<ReturnType<typeof App.addListener>> | undefined
+    void App.addListener('backButton', closeConversation).then((handle) => {
+      if (active) listener = handle
+      else void handle.remove()
+    }).catch((navigationError: unknown) => {
+      if (active) setError(navigationError instanceof Error ? navigationError.message : 'Unable to handle Android back navigation.')
+    })
+
+    return () => {
+      active = false
+      if (listener) void listener.remove()
+    }
+  }, [selectedId, closeConversation])
 
   const loadDirectory = async () => {
+    if (directoryRequestInFlight.current) return
+    directoryRequestInFlight.current = true
     setDirectoryError('')
     setDirectoryLoading(true)
     try {
@@ -289,6 +392,7 @@ export function MessagesPage() {
       setDirectoryError(loadError instanceof Error ? loadError.message : 'Unable to load users.')
     } finally {
       setDirectoryLoading(false)
+      directoryRequestInFlight.current = false
     }
   }
 
@@ -802,13 +906,13 @@ export function MessagesPage() {
         </aside>
 
         <section className={`${selectedId ? 'flex' : 'hidden lg:flex'} h-full min-h-0 min-w-0 flex-col bg-[#efeae2] bg-[radial-gradient(#d8d4ca_0.7px,transparent_0.7px)] [background-size:20px_20px] p-0`}>
-          {error && selectedId ? <div className="mx-2 mb-2 flex items-center justify-between gap-2 rounded-xl border border-rose-200 bg-white p-2.5 text-xs text-rose-700" role="alert"><span className="min-w-0">{error}</span>{sendFailed ? <button type="button" onClick={() => void handleSendMessage()} disabled={sending || !canSend} className="shrink-0 font-semibold underline disabled:opacity-50">Retry send</button> : null}</div> : null}
+          {error && selectedId ? <div className="mx-2 mb-2 flex items-center justify-between gap-2 rounded-xl border border-rose-200 bg-white p-2.5 text-xs text-rose-700" role="alert"><span className="min-w-0">{error}</span>{messagesLoadFailed ? <button type="button" onClick={() => void loadConversationMessages(selectedId)} disabled={messagesLoading} className="shrink-0 font-semibold underline disabled:opacity-50">Retry messages</button> : sendFailed ? <button type="button" onClick={() => void handleSendMessage()} disabled={sending || !canSend} className="shrink-0 font-semibold underline disabled:opacity-50">Retry send</button> : null}</div> : null}
                       {!selectedId && error ? <div role="alert" className="flex items-center justify-between gap-2 px-2 py-3 text-xs text-rose-700"><span>{error}</span><button type="button" onClick={() => void loadConversations()} className="shrink-0 font-semibold underline">Retry</button></div> : null}
           {activeConversation ? (
             <>
               <header className="sticky top-0 z-10 flex min-h-14 items-center justify-between gap-1 border-b border-slate-200 bg-white px-1 py-2 shadow-sm">
                 <div className="flex min-w-0 items-center gap-3">
-                  <button type="button" onClick={() => setSelectedId('')} aria-label="Back to chats" className="rounded-full p-2 text-slate-500 hover:bg-blue-50 lg:hidden"><ArrowLeft className="h-5 w-5" aria-hidden="true" /></button>
+                  <button type="button" onClick={closeConversation} aria-label="Back to chats" title="Back to chats" className="rounded-full p-2 text-slate-500 hover:bg-blue-50"><ArrowLeft className="h-5 w-5" aria-hidden="true" /></button>
                   {activeConversation.isGroup && !activeConversation.isChannel
                     ? <button type="button" onClick={() => openGroupProfile()} aria-label="Open group details" title="Open group details" className="shrink-0 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-600"><Avatar src={resolveMediaUrl(activeConversation.imageUrl)} alt={activeConversation.name ?? 'Group'} size="md" /></button>
                     : <Avatar src={(activeConversation.isGroup ? resolveMediaUrl(activeConversation.imageUrl) : activePeer?.avatar) ?? ''} alt={activeConversation.name ?? activePeer?.name ?? 'Group'} size="md" />}
@@ -856,7 +960,7 @@ export function MessagesPage() {
                 </div>
               </section> : null}
 
-              {showMedia ? <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-slate-50 p-3 sm:grid-cols-3">{media.length ? media.map((item) => item.mediaUrl ? <a key={item.id} href={resolveMediaUrl(item.mediaUrl)} target="_blank" rel="noreferrer" className="min-w-0 overflow-hidden rounded-lg bg-white text-xs text-indigo-700">{item.contentType === 'IMAGE' ? <img src={resolveMediaUrl(item.mediaUrl)} crossOrigin={item.mediaUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} alt="Shared image" className="aspect-square w-full object-cover" /> : <span className="block truncate p-2">{item.contentType}: {item.mediaUrl}</span>}</a> : null) : <p className="text-xs text-slate-500">No shared media.</p>}</div> : null}
+              {showMedia ? <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-slate-50 p-3 sm:grid-cols-3">{media.length ? media.map((item) => item.mediaUrl ? <a key={item.id} href={resolveMediaUrl(item.mediaUrl)} target="_blank" rel="noreferrer" className="min-w-0 overflow-hidden rounded-lg bg-white text-xs text-indigo-700">{item.contentType === 'IMAGE' ? <img src={resolveMediaUrl(item.mediaUrl)} crossOrigin={item.mediaUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} alt="Shared image" loading="lazy" decoding="async" className="aspect-square w-full object-cover" /> : <span className="block truncate p-2">{item.contentType}: {item.mediaUrl}</span>}</a> : null) : <p className="text-xs text-slate-500">No shared media.</p>}</div> : null}
               <form onSubmit={(event) => void searchMessages(event)} className="mt-2 flex gap-2 px-1">
                 <input aria-label="Search messages" value={messageSearch} onChange={(event) => setMessageSearch(event.target.value)} placeholder="Search messages in this chat" minLength={2} className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:outline-none" />
                 <Button type="submit" variant="secondary" size="sm" disabled={messageSearch.trim().length < 2} icon={<Search className="h-4 w-4" aria-hidden="true" />}>Search</Button>
@@ -864,6 +968,7 @@ export function MessagesPage() {
               </form>
 
               <div className="mt-2 min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain px-2 pb-2 sm:px-3">
+                {messagesStale ? <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-900" role="status">Showing saved messages. They may be out of date.</p> : null}
                 {hasMore && !searchResults ? <Button variant="secondary" size="sm" onClick={() => void loadOlderMessages()} disabled={loadingOlder}>{loadingOlder ? 'Loading…' : 'Load older messages'}</Button> : null}
                 {messagesLoading ? <div className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-500">Loading messages…</div> : null}
                 {!messagesLoading && searchResults && searchResults.length === 0 ? <p className="text-center text-sm text-slate-500">No matching messages.</p> : null}

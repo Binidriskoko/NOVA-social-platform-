@@ -1,12 +1,13 @@
 import { ArrowRight, ChevronLeft, ChevronRight, Plus, Send, X } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { PostCard } from '../components/PostCard'
 import { FeedAdSlot } from '../components/FeedAdSlot'
 import { Avatar } from '../components/ui/Avatar'
 import { useAuth } from '../context/AuthContext'
-import { apiRequest, resolveMediaUrl, uploadMedia } from '../lib/api'
+import { ApiError, apiRequest, resolveMediaUrl, uploadMedia } from '../lib/api'
 import { isVideoStoryMedia, sendStoryReply } from '../lib/storyReplies'
+import { clearCachedRead, getCachedRead, setCachedRead } from '../lib/readCache'
 import type { Post } from '../types'
 
 type StoryRecord = {
@@ -41,12 +42,19 @@ function toPost(record: any): Post {
 
 export function HomePage() {
   const { user } = useAuth()
-  const [posts, setPosts] = useState<Post[]>([])
+  const feedCacheKey = user?.id ? JSON.stringify(['feed', user.id]) : ''
+  const cachedFeed = feedCacheKey ? getCachedRead<Post[]>(feedCacheKey) : undefined
+  const [posts, setPosts] = useState<Post[]>(cachedFeed ?? [])
   const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!cachedFeed)
+  const [feedStale, setFeedStale] = useState(Boolean(cachedFeed))
+  const feedRequestRef = useRef<{ key: string; controller: AbortController } | null>(null)
+  const feedCacheKeyRef = useRef(feedCacheKey)
+  feedCacheKeyRef.current = feedCacheKey
   const [stories, setStories] = useState<StoryRecord[]>([])
   const [storiesLoading, setStoriesLoading] = useState(true)
   const [storiesError, setStoriesError] = useState('')
+  const storiesRequestInFlight = useRef(false)
   const [showStoryComposer, setShowStoryComposer] = useState(false)
   const [storyText, setStoryText] = useState('')
   const [storyMediaUrl, setStoryMediaUrl] = useState('')
@@ -62,20 +70,54 @@ export function HomePage() {
   const [storyViewerError, setStoryViewerError] = useState('')
   const navigate = useNavigate()
 
-  const loadFeed = async () => {
-    setLoading(true)
+  const loadFeed = useCallback(async () => {
+    if (feedRequestRef.current?.key === feedCacheKey) return
+    feedRequestRef.current?.controller.abort()
+    const controller = new AbortController()
+    const request = { key: feedCacheKey, controller }
+    feedRequestRef.current = request
+    if (!feedCacheKey || !getCachedRead<Post[]>(feedCacheKey)) setLoading(true)
     setError('')
     try {
-      const response = await apiRequest<{ posts: any[] }>('/api/posts?limit=50')
-      setPosts(response.posts.map(toPost))
+      const response = await apiRequest<{ posts: any[] }>('/api/posts?limit=50', { signal: controller.signal })
+      if (feedCacheKeyRef.current !== feedCacheKey) return
+      const nextPosts = response.posts.map(toPost)
+      setPosts(nextPosts)
+      if (feedCacheKey) setCachedRead(feedCacheKey, nextPosts)
+      setFeedStale(false)
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Unable to load your feed.')
+      if (controller.signal.aborted || feedCacheKeyRef.current !== feedCacheKey) return
+      const isOffline = loadError instanceof ApiError
+        && (loadError.code === 'NETWORK_ERROR' || loadError.code === 'TIMEOUT')
+      const savedPosts = feedCacheKey ? getCachedRead<Post[]>(feedCacheKey) : undefined
+      if (loadError instanceof ApiError && [401, 403].includes(loadError.status ?? 0)) {
+        if (feedCacheKey) clearCachedRead(feedCacheKey)
+        setPosts([])
+        setFeedStale(false)
+      } else if (isOffline && savedPosts) {
+        setPosts(savedPosts)
+        setFeedStale(true)
+        setError('Connection unavailable. Showing your saved feed, which may be out of date.')
+      } else {
+        setFeedStale(Boolean(savedPosts))
+        const message = loadError instanceof Error ? loadError.message : 'Unable to load your feed.'
+        setError(savedPosts ? `Unable to refresh. Showing saved feed data, which may be out of date. ${message}` : message)
+      }
     } finally {
-      setLoading(false)
+      if (feedRequestRef.current === request) {
+        setLoading(false)
+        feedRequestRef.current = null
+      }
     }
-  }
+  }, [feedCacheKey])
 
-  useEffect(() => { void loadFeed() }, [])
+  useEffect(() => {
+    const savedPosts = feedCacheKey ? getCachedRead<Post[]>(feedCacheKey) : undefined
+    setPosts(savedPosts ?? [])
+    setFeedStale(Boolean(savedPosts))
+    setLoading(!savedPosts)
+    void loadFeed()
+  }, [feedCacheKey, loadFeed])
 
   useEffect(() => {
     if (loading || !window.location.hash.startsWith('#post-')) return
@@ -83,6 +125,8 @@ export function HomePage() {
   }, [loading, posts])
 
   const loadStories = async () => {
+    if (storiesRequestInFlight.current) return
+    storiesRequestInFlight.current = true
     try {
       const response = await apiRequest<{ stories: StoryRecord[] }>('/api/stories')
       setStories(response.stories)
@@ -90,17 +134,11 @@ export function HomePage() {
       setStoriesError(loadError instanceof Error ? loadError.message : 'Unable to load stories.')
     } finally {
       setStoriesLoading(false)
+      storiesRequestInFlight.current = false
     }
   }
 
-  useEffect(() => {
-    let mounted = true
-    apiRequest<{ stories: StoryRecord[] }>('/api/stories')
-      .then((response) => { if (mounted) setStories(response.stories) })
-      .catch((loadError) => { if (mounted) setStoriesError(loadError instanceof Error ? loadError.message : 'Unable to load stories.') })
-      .finally(() => { if (mounted) setStoriesLoading(false) })
-    return () => { mounted = false }
-  }, [])
+  useEffect(() => { void loadStories() }, [])
 
   const refreshStories = () => {
     setStoriesLoading(true)
@@ -248,7 +286,7 @@ export function HomePage() {
             </button>
             {stories.map((story) => (
               <button key={story.id} type="button" onClick={() => void openStory(story)} className={`relative flex h-28 w-20 shrink-0 flex-col justify-end overflow-hidden rounded-2xl p-2 text-left text-white ring-2 ${story.viewedByMe ? 'ring-slate-200' : 'ring-indigo-500'}`}>
-                {story.mediaUrl ? <img src={resolveMediaUrl(story.mediaUrl)} crossOrigin={story.mediaUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} alt="" className="absolute inset-0 h-full w-full object-cover" /> : <span className="absolute inset-0 bg-gradient-to-b from-indigo-500 to-blue-800" />}
+                {story.mediaUrl ? <img src={resolveMediaUrl(story.mediaUrl)} crossOrigin={story.mediaUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} alt="" loading="lazy" decoding="async" className="absolute inset-0 h-full w-full object-cover" /> : <span className="absolute inset-0 bg-gradient-to-b from-indigo-500 to-blue-800" />}
                 <span className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent" />
                 <span className="absolute left-2 top-2 rounded-full border-2 border-white"><Avatar src={story.author.avatar} alt={story.author.name} size="sm" /></span>
                 <span className="relative line-clamp-2 text-xs font-semibold">{story.authorId === user?.id ? 'Your story' : story.author.name}</span>
@@ -396,7 +434,7 @@ export function HomePage() {
             </div>
 
             {error ? (
-              <div className="mb-3 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+              <div role={feedStale && posts.length ? 'status' : 'alert'} className={`mb-3 rounded-2xl border p-4 text-sm ${feedStale && posts.length ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <span>{error}</span>
                   <button type="button" onClick={() => void loadFeed()} className="font-semibold underline">
@@ -435,7 +473,11 @@ export function HomePage() {
             <div className="space-y-3">
               {!loading && posts.map((post, index) => (
                 <Fragment key={post.id}>
-                  <PostCard post={post} onDeleted={(postId) => setPosts((current) => current.filter((item) => item.id !== postId))} />
+                  <PostCard post={post} onDeleted={(postId) => setPosts((current) => {
+                    const nextPosts = current.filter((item) => item.id !== postId)
+                    if (feedCacheKey) setCachedRead(feedCacheKey, nextPosts)
+                    return nextPosts
+                  })} />
                   {index === Math.min(3, posts.length - 1) ? <FeedAdSlot /> : null}
                 </Fragment>
               ))}

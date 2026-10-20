@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 const expectedCertificateFingerprint = 'C81B2766C700A37A096C7A26F4F92DA73480F55F6221D1C660AC90F4508007DE'
+const publishedV110CertificateFingerprint = 'AF616784DF6B2E4BDF9D34A24524F5C381CFDF3BFC710EF825F10224D4156503'
 const projectRoot = resolve(import.meta.dirname, '..')
 const downloadPageUrl = 'https://github.com/Binidriskoko/NOVA-social-platform-/releases/latest'
 
@@ -54,6 +55,12 @@ if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)
 }
 if (metadata.versionCode !== versionCode || metadata.versionName !== versionName) {
   throw new Error('Android Gradle version and release-metadata.json must match before publishing.')
+}
+if (expectedCertificateFingerprint !== publishedV110CertificateFingerprint) {
+  throw new Error(
+    'The public v1.1.0 APK is signed with an Android Debug certificate, not the pinned release certificate. '
+    + 'A different signing identity cannot update existing installs; refusing to publish until the signing-identity migration is explicitly resolved.',
+  )
 }
 if (process.env.GITHUB_REF_NAME && process.env.GITHUB_REF_NAME !== `v${versionName}`) {
   throw new Error(`Tag ${process.env.GITHUB_REF_NAME} does not match Android version v${versionName}.`)

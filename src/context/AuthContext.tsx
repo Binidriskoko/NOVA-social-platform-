@@ -1,7 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, type ReactNode } from 'react'
 import { getCurrentUser, loginUser, logoutUser, registerUser, type AuthUser, type RegisterInput } from '../lib/auth'
 import { authSessionReducer, initialAuthSessionState } from '../lib/authSession'
-import { clearCachedReads } from '../lib/readCache'
 
 type AuthContextValue = {
   user: AuthUser | null
@@ -18,14 +17,6 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [{ user, isLoading, authError }, dispatch] = useReducer(authSessionReducer, initialAuthSessionState)
-  const previousUserIdRef = useRef<string | null>(null)
-  const initialVerificationStartedRef = useRef(false)
-
-  useEffect(() => {
-    const nextUserId = user?.id ?? null
-    if (previousUserIdRef.current && previousUserIdRef.current !== nextUserId) clearCachedReads()
-    previousUserIdRef.current = nextUserId
-  }, [user?.id])
 
   const refreshCurrentUser = useCallback(async () => {
     dispatch({ type: 'verification-started' })
@@ -44,8 +35,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    if (initialVerificationStartedRef.current) return
-    initialVerificationStartedRef.current = true
     void refreshCurrentUser().catch(() => undefined)
   }, [refreshCurrentUser])
 
@@ -64,7 +53,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const logout = useCallback(async () => {
-    clearCachedReads()
     await logoutUser()
     dispatch({ type: 'logged-out' })
   }, [])

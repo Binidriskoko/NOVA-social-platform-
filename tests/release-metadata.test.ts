@@ -9,10 +9,10 @@ import {
 import type { ReleaseMetadata } from '../src/lib/releaseMetadata'
 
 const currentRelease: ReleaseMetadata = {
-  versionName: '1.1.0',
-  versionCode: 2,
-  releaseNotes: 'NOVAKOKO Android app. Download the APK, install it, and open the app.',
-  releaseDate: '2026-10-18T23:18:44Z',
+  versionName: '1.0.0',
+  versionCode: 1,
+  releaseNotes: 'Initial public Android release.',
+  releaseDate: '2026-10-02T05:15:03Z',
   minSupportedVersionCode: 1,
   downloadPageUrl: 'https://github.com/Binidriskoko/NOVA-social-platform-/releases/latest',
 }
@@ -36,17 +36,6 @@ describe('Android release metadata', () => {
       .toBe(gradle.match(/versionName\s+"([^"]+)"/)?.[1])
   })
 
-  it('fails closed when the public APK signing identity differs from the pinned release key', async () => {
-    const script = await readFile(new URL('../scripts/build-android-release.mjs', import.meta.url), 'utf8')
-    const gradle = await readFile(new URL('../android/app/build.gradle', import.meta.url), 'utf8')
-    expect(script).toContain('publishedV110CertificateFingerprint')
-    expect(script).toContain('refusing to publish until the signing-identity migration is explicitly resolved')
-    expect(gradle).toContain('Refusing an unsigned Android release')
-    expect(gradle).toContain("task.name in ['assembleRelease', 'bundleRelease']")
-    expect(gradle).toContain('C81B2766C700A37A096C7A26F4F92DA73480F55F6221D1C660AC90F4508007DE')
-    expect(gradle).toContain('Signing certificate does not match the pinned release certificate.')
-  })
-
   it('rejects malformed or untrusted manifest values', () => {
     expect(() => parseReleaseMetadata({ ...currentRelease, versionCode: 0 })).toThrow(/versionCode/)
     expect(() => parseReleaseMetadata({ ...currentRelease, downloadPageUrl: 'http://example.com' }))
@@ -54,13 +43,11 @@ describe('Android release metadata', () => {
   })
 
   it('only reports a release newer than the installed version', () => {
-    const newerRelease = { ...currentRelease, versionCode: 3, versionName: '1.2.0' }
-    expect(isUpdateAvailable(1, currentRelease)).toBe(true)
-    expect(isUpdateAvailable(2, currentRelease)).toBe(false)
+    const newerRelease = { ...currentRelease, versionCode: 2, versionName: '1.1.0' }
+    expect(isUpdateAvailable(1, currentRelease)).toBe(false)
     expect(isUpdateAvailable(1, newerRelease)).toBe(true)
-    expect(isUpdateAvailable(2, newerRelease)).toBe(true)
+    expect(isUpdateAvailable(2, newerRelease)).toBe(false)
     expect(isUpdateAvailable(3, newerRelease)).toBe(false)
-    expect(isUpdateAvailable(4, newerRelease)).toBe(false)
     expect(isUpdateAvailable(0, newerRelease)).toBe(false)
   })
 

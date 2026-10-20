@@ -1,13 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Bookmark, Heart, MessageCircle, Share2, X } from 'lucide-react'
 import { PostMedia } from '../components/PostMedia'
 import { Avatar } from '../components/ui/Avatar'
 import { Button } from '../components/ui/Button'
-import { ApiError, apiRequest } from '../lib/api'
+import { apiRequest } from '../lib/api'
 import { isVideoPostMediaUrl } from '../lib/postMedia'
 import { sharePostLink } from '../lib/postSharing'
-import { useAuth } from '../context/AuthContext'
-import { clearCachedRead, getCachedRead, setCachedRead } from '../lib/readCache'
 import type { Post } from '../types'
 
 type FeedPostRecord = {
@@ -50,16 +48,9 @@ function toPost(record: FeedPostRecord): Post {
 }
 
 export function VideosPage() {
-  const { user } = useAuth()
-  const feedCacheKey = user?.id ? JSON.stringify(['feed', user.id]) : ''
-  const cachedFeed = feedCacheKey ? getCachedRead<Post[]>(feedCacheKey) : undefined
-  const [posts, setPosts] = useState<Post[]>(() => cachedFeed?.filter((post) => Boolean(post.image && isVideoPostMediaUrl(post.image))) ?? [])
-  const [loading, setLoading] = useState(!cachedFeed)
-  const [feedStale, setFeedStale] = useState(Boolean(cachedFeed))
+  const [posts, setPosts] = useState<Post[]>([])
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const feedRequestRef = useRef<{ key: string; controller: AbortController } | null>(null)
-  const feedCacheKeyRef = useRef(feedCacheKey)
-  feedCacheKeyRef.current = feedCacheKey
   const [activePostId, setActivePostId] = useState('')
   const [commentsPost, setCommentsPost] = useState<Post | null>(null)
   const [comments, setComments] = useState<VideoComment[]>([])
@@ -69,61 +60,21 @@ export function VideosPage() {
   const [notice, setNotice] = useState('')
   const feedRef = useRef<HTMLDivElement | null>(null)
 
-  const loadVideos = useCallback(async () => {
-    if (feedRequestRef.current?.key === feedCacheKey) return
-    feedRequestRef.current?.controller.abort()
-    const controller = new AbortController()
-    const request = { key: feedCacheKey, controller }
-    feedRequestRef.current = request
-    if (!feedCacheKey || !getCachedRead<Post[]>(feedCacheKey)) setLoading(true)
-    setError('')
-    try {
-      const { posts: records } = await apiRequest<{ posts: FeedPostRecord[] }>('/api/posts?limit=50', { signal: controller.signal })
-      if (feedCacheKeyRef.current !== feedCacheKey) return
-      const nextFeed = records.map(toPost)
-      const videos = nextFeed.filter((post) => Boolean(post.image && isVideoPostMediaUrl(post.image)))
-      if (feedCacheKey) setCachedRead(feedCacheKey, nextFeed)
-      setPosts(videos)
-      setActivePostId(videos[0]?.id ?? '')
-      setFeedStale(false)
-    } catch (loadError) {
-      if (controller.signal.aborted || feedCacheKeyRef.current !== feedCacheKey) return
-      const savedFeed = feedCacheKey ? getCachedRead<Post[]>(feedCacheKey) : undefined
-      if (loadError instanceof ApiError && [401, 403].includes(loadError.status ?? 0)) {
-        if (feedCacheKey) clearCachedRead(feedCacheKey)
-        setPosts([])
-        setFeedStale(false)
-      } else if (loadError instanceof ApiError
-        && (loadError.code === 'NETWORK_ERROR' || loadError.code === 'TIMEOUT')
-        && savedFeed) {
-        const savedVideos = savedFeed.filter((post) => Boolean(post.image && isVideoPostMediaUrl(post.image)))
-        setPosts(savedVideos)
-        setActivePostId(savedVideos[0]?.id ?? '')
-        setFeedStale(true)
-        setError('Connection unavailable. Showing saved videos, which may be out of date.')
-      } else {
-        setFeedStale(Boolean(savedFeed))
-        setError(savedFeed
-          ? `Unable to refresh. Showing saved videos, which may be out of date. ${loadError instanceof Error ? loadError.message : 'Unable to load videos.'}`
-          : loadError instanceof Error ? loadError.message : 'Unable to load videos.')
-      }
-    } finally {
-      if (feedRequestRef.current === request) {
-        setLoading(false)
-        feedRequestRef.current = null
-      }
-    }
-  }, [feedCacheKey])
-
   useEffect(() => {
-    const savedFeed = feedCacheKey ? getCachedRead<Post[]>(feedCacheKey) : undefined
-    const savedVideos = savedFeed?.filter((post) => Boolean(post.image && isVideoPostMediaUrl(post.image))) ?? []
-    setPosts(savedVideos)
-    setActivePostId(savedVideos[0]?.id ?? '')
-    setFeedStale(Boolean(savedFeed))
-    setLoading(!savedFeed)
-    void loadVideos()
-  }, [feedCacheKey, loadVideos])
+    let mounted = true
+    apiRequest<{ posts: FeedPostRecord[] }>('/api/posts?limit=50')
+      .then(({ posts: records }) => {
+        if (!mounted) return
+        const videos = records.map(toPost).filter((post) => Boolean(post.image && isVideoPostMediaUrl(post.image)))
+        setPosts(videos)
+        setActivePostId(videos[0]?.id ?? '')
+      })
+      .catch((loadError: unknown) => {
+        if (mounted) setError(loadError instanceof Error ? loadError.message : 'Unable to load videos.')
+      })
+      .finally(() => { if (mounted) setLoading(false) })
+    return () => { mounted = false }
+  }, [])
 
   useEffect(() => {
     const root = feedRef.current
@@ -226,15 +177,15 @@ export function VideosPage() {
       <h1 className="sr-only">Videos feed</h1>
       <div ref={feedRef} className="h-full min-h-0 snap-y snap-mandatory overflow-y-auto overscroll-contain scroll-smooth">
         {loading ? <div className="flex h-full items-center justify-center text-sm text-white/70" role="status">Loading videos…</div> : null}
-        {error ? <div className={`flex ${feedStale && posts.length ? 'items-center justify-between gap-3 px-4 py-3 text-left' : 'h-full flex-col items-center justify-center gap-3 px-6 text-center'} ${feedStale && posts.length ? 'bg-amber-950 text-amber-100' : ''}`} role={feedStale && posts.length ? 'status' : 'alert'}><p>{error}</p><button type="button" onClick={() => void loadVideos()} disabled={loading} className="shrink-0 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold disabled:opacity-50">{loading ? 'Retrying…' : 'Retry'}</button></div> : null}
+        {error ? <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center" role="alert"><p>{error}</p><button type="button" onClick={() => window.location.reload()} className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold">Retry</button></div> : null}
         {!loading && !error && posts.length === 0 ? <div className="flex h-full flex-col items-center justify-center px-6 text-center"><p className="font-semibold">No videos yet</p><p className="mt-2 text-sm text-white/70">Video posts will appear here. Share a video from Home to get started.</p></div> : null}
-        {!loading && (!error || feedStale) ? posts.map((post) => (
+        {!loading && !error ? posts.map((post) => (
           <section
             key={post.id}
             data-post-id={post.id}
             className="relative flex h-full snap-start items-center justify-center overflow-hidden bg-black pb-16 sm:pb-4"
           >
-            {post.image ? <PostMedia url={post.image} postId={post.id} measurementSource="videos" active={activePostId === post.id} className="h-full max-h-full w-full max-w-full object-contain" alt={`Video by ${post.author.name}`} /> : null}
+            {post.image ? <PostMedia url={post.image} postId={post.id} measurementSource="videos" active={activePostId === post.id} autoPlay className="h-full max-h-full w-full max-w-full object-contain" alt={`Video by ${post.author.name}`} /> : null}
             <div className="pointer-events-none absolute inset-x-0 bottom-20 bg-gradient-to-t from-black/75 via-black/25 to-transparent px-4 pb-5 pt-20 sm:bottom-4 sm:pb-5">
               <div className="pointer-events-auto flex max-w-[75%] items-center gap-2">
                 <Avatar src={post.author.avatar} alt={post.author.name} size="sm" />

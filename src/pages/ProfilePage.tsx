@@ -1,12 +1,11 @@
 import { Link2, MapPin, PencilLine, UserRoundCheck, UserRoundPlus, UserRoundX } from 'lucide-react'
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useParams } from 'react-router-dom'
 import { Avatar } from '../components/ui/Avatar'
 import { Button } from '../components/ui/Button'
 import { PostCard } from '../components/PostCard'
 import { useAuth } from '../context/AuthContext'
-import { ApiError, apiRequest, resolveMediaUrl, uploadMedia } from '../lib/api'
-import { clearCachedRead, getCachedRead, setCachedRead } from '../lib/readCache'
+import { apiRequest, resolveMediaUrl, uploadMedia } from '../lib/api'
 import type { Post } from '../types'
 
 type ProfileRecord = {
@@ -41,75 +40,35 @@ export function ProfilePage() {
   const { user } = useAuth()
   const { id } = useParams()
   const profileId = id ?? user?.id
-  const profileCacheKey = profileId && user?.id ? JSON.stringify(['profile', user.id, profileId]) : ''
-  const cachedProfile = profileCacheKey
-    ? getCachedRead<{ profile: ProfileRecord; posts: Post[] }>(profileCacheKey)
-    : undefined
-  const profileCacheKeyRef = useRef(profileCacheKey)
-  profileCacheKeyRef.current = profileCacheKey
   const isOwnProfile = profileId === user?.id
-  const [profileStateKey, setProfileStateKey] = useState(profileCacheKey)
-  const [posts, setPosts] = useState<Post[]>(() => cachedProfile?.posts ?? [])
-  const [profile, setProfile] = useState<ProfileRecord | null>(() => cachedProfile?.profile ?? null)
-  const [loading, setLoading] = useState(!cachedProfile)
-  const [profileStale, setProfileStale] = useState(Boolean(cachedProfile))
+  const [posts, setPosts] = useState<Post[]>([])
+  const [profile, setProfile] = useState<ProfileRecord | null>(null)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
   const [editDraft, setEditDraft] = useState({ displayName: '', username: '', bio: '', avatarUrl: '', coverUrl: '', website: '', location: '' })
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
 
-  const loadProfile = async (signal?: AbortSignal) => {
+  const loadProfile = async () => {
     if (!profileId) return
-    const requestKey = profileCacheKey
-    if (profileCacheKeyRef.current !== requestKey) return
-    const savedProfile = requestKey ? getCachedRead<{ profile: ProfileRecord; posts: Post[] }>(requestKey) : undefined
-    setLoading(!savedProfile)
-    setProfileStale(false)
+    setLoading(true)
     setError('')
     try {
       const [userResponse, postsResponse] = await Promise.all([
-        apiRequest<{ user: ProfileRecord }>(`/api/users/${encodeURIComponent(profileId)}`, { signal }),
-        apiRequest<{ posts: any[] }>('/api/posts?limit=100', { signal }),
+        apiRequest<{ user: ProfileRecord }>(`/api/users/${encodeURIComponent(profileId)}`),
+        apiRequest<{ posts: any[] }>('/api/posts?limit=100'),
       ])
-      if (signal?.aborted || profileCacheKeyRef.current !== requestKey) return
-      const nextProfile = { profile: userResponse.user, posts: postsResponse.posts.filter((post) => post.author.id === profileId).map(toPost) }
       setProfile(userResponse.user)
-      setPosts(nextProfile.posts)
-      setProfileStale(false)
-      if (requestKey) setCachedRead(requestKey, nextProfile)
+      setPosts(postsResponse.posts.filter((post) => post.author.id === profileId).map(toPost))
     } catch (loadError) {
-      if (signal?.aborted || profileCacheKeyRef.current !== requestKey) return
-      if (loadError instanceof ApiError && [401, 403, 404].includes(loadError.status ?? 0)) {
-        if (requestKey) clearCachedRead(requestKey)
-        setProfile(null)
-        setPosts([])
-        setProfileStale(false)
-        setError(loadError.message)
-      } else {
-        setProfileStale(Boolean(savedProfile))
-        setError(savedProfile
-          ? `Unable to refresh. Showing saved profile data, which may be out of date. ${loadError instanceof Error ? loadError.message : 'Unable to load this profile.'}`
-          : loadError instanceof Error ? loadError.message : 'Unable to load this profile.')
-      }
+      setError(loadError instanceof Error ? loadError.message : 'Unable to load this profile.')
     } finally {
-      if (!signal?.aborted && profileCacheKeyRef.current === requestKey) setLoading(false)
+      setLoading(false)
     }
   }
 
-  useEffect(() => {
-    const savedProfile = profileCacheKey
-      ? getCachedRead<{ profile: ProfileRecord; posts: Post[] }>(profileCacheKey)
-      : undefined
-    setProfile(savedProfile?.profile ?? null)
-    setPosts(savedProfile?.posts ?? [])
-    setProfileStateKey(profileCacheKey)
-    setProfileStale(false)
-    setLoading(!savedProfile)
-    const controller = new AbortController()
-    void loadProfile(controller.signal)
-    return () => controller.abort()
-  }, [profileCacheKey, profileId])
+  useEffect(() => { void loadProfile() }, [profileId])
 
   const displayName = profile?.profile?.displayName ?? profile?.name ?? 'NOVAKOKO user'
   const avatar = profile?.profile?.avatarUrl ?? ''
@@ -201,7 +160,7 @@ export function ProfilePage() {
     }
   }
 
-  if (profileStateKey !== profileCacheKey || loading) return <div className="p-6 text-sm text-slate-500" role="status">Loading profile…</div>
+  if (loading) return <div className="p-6 text-sm text-slate-500">Loading profile…</div>
   if (error && !profile) return <div className="m-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700" role="alert">{error}</div>
   if (!profile) return null
 
@@ -211,7 +170,6 @@ export function ProfilePage() {
     <div className="p-4 sm:p-6">
       <div className="mx-auto max-w-5xl space-y-6">
         {error ? <p className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700" role="alert">{error}</p> : null}
-        {profileStale ? <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900" role="status">Showing saved profile data. It may be out of date.</p> : null}
         {notice ? <p className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700" role="status">{notice}</p> : null}
         <section className="overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm">
           {profile.profile.coverUrl ? <img src={resolveMediaUrl(profile.profile.coverUrl)} crossOrigin={profile.profile.coverUrl.startsWith('/api/media/') ? 'use-credentials' : undefined} alt="Profile cover" className="h-40 w-full object-cover" /> : <div className="h-40 bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500" />}

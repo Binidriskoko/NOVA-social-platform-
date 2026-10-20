@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { app } from '../app.js';
-import { commerceStore } from '../lib/commerceStore.js';
 import { fallbackStore } from '../lib/fallbackStore.js';
 import { hashPassword } from '../lib/auth.js';
 import { socialStore } from '../lib/socialStore.js';
@@ -41,7 +40,6 @@ async function makeUser(input: {
 describe('admin and moderation routes', () => {
   beforeEach(() => {
     fallbackStore.clear();
-    commerceStore.clear();
     socialStore.clear();
   });
 
@@ -298,40 +296,13 @@ describe('admin and moderation routes', () => {
       status: 'SUCCESS',
       createdAt: new Date().toISOString(),
     } as any);
-    commerceStore.state.paymentIntents.push({
-      id: 'intent_2',
-      reference: 'ref_456',
-      idempotencyKey: 'subscription-sub_2',
-      payerId: user.user.id,
-      provider: 'manual',
-      providerReference: 'pi_456',
-      amountCents: 2000,
-      currency: 'USD',
-      purpose: 'PLATFORM_SUBSCRIPTION',
-      targetId: 'sub_2',
-      metadata: {},
-      status: 'SUCCESS',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-    socialStore.state.payments.push({
-      id: 'pay_legacy',
-      subscriptionId: 'sub_legacy',
-      userId: user.user.id,
-      provider: 'stripe',
-      providerReference: 'pi_legacy',
-      amountCents: 3000,
-      currency: 'USD',
-      status: 'PAID',
-      createdAt: new Date().toISOString(),
-    } as any);
 
     const response = await request(app)
       .get('/api/admin/revenue')
       .set('Cookie', getCookieHeader(login));
 
     expect(response.status).toBe(200);
-    expect(response.body.metrics.grossRevenue).toBe(5000);
+    expect(response.body.metrics.grossRevenue).toBe(2000);
     expect(response.body.metrics.platformRevenue).toBeGreaterThanOrEqual(0);
   });
 

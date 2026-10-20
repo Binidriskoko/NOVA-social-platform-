@@ -1,31 +1,49 @@
 import { useEffect, useRef, useState } from 'react'
-import { apiRequest, resolveMediaUrl } from '../lib/api'
+import { apiRequest, fetchMediaBlob, resolveMediaUrl } from '../lib/api'
 import { isVideoPostMediaUrl } from '../lib/postMedia'
-import { useAuthenticatedMediaBlob } from '../lib/useAuthenticatedMediaBlob'
 
 type PostMediaProps = {
   url: string
   alt?: string
   className?: string
   active?: boolean
+  autoPlay?: boolean
   postId?: string
   measurementSource?: 'feed' | 'videos' | 'explore' | 'profile' | 'home' | 'stories' | 'messages' | 'unknown'
 }
 
-export function PostMedia({ url, alt = 'Post attachment', className = '', active = true, postId, measurementSource = 'unknown' }: PostMediaProps) {
-  const [requestedVideoUrl, setRequestedVideoUrl] = useState('')
+export function PostMedia({ url, alt = 'Post attachment', className = '', active = true, autoPlay = false, postId, measurementSource = 'unknown' }: PostMediaProps) {
+  const [loaded, setLoaded] = useState<{ url: string; source: string; error: string }>({ url: '', source: '', error: '' })
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const sessionRef = useRef<{ sessionId: string; startRequest: Promise<boolean>; lastSentTime: number; lastObservedTime: number; heartbeatRequest: Promise<void> | null } | null>(null)
   const isUploaded = url.startsWith('/api/media/')
   const isVideo = isVideoPostMediaUrl(url)
-  const videoRequested = requestedVideoUrl === url
-  const media = useAuthenticatedMediaBlob(url, isUploaded && (!isVideo || videoRequested))
+
+  useEffect(() => {
+    if (!isUploaded) return
+    const controller = new AbortController()
+    let objectUrl = ''
+    void fetchMediaBlob(url, controller.signal).then((blob) => {
+      if (controller.signal.aborted) return
+      objectUrl = URL.createObjectURL(blob)
+      setLoaded({ url, source: objectUrl, error: '' })
+    }).catch((loadError: unknown) => {
+      if (!controller.signal.aborted) {
+        setLoaded({ url, source: '', error: loadError instanceof Error ? loadError.message : 'Unable to load this media.' })
+      }
+    })
+    return () => {
+      controller.abort()
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [isUploaded, url])
 
   useEffect(() => {
     const video = videoRef.current
-    if (!video || active) return
-    video.pause()
-  }, [active])
+    if (!video || !autoPlay) return
+    if (active) void video.play().catch(() => undefined)
+    else video.pause()
+  }, [active, autoPlay, loaded.source])
 
   useEffect(() => {
     const video = videoRef.current
@@ -132,27 +150,11 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
     }
   }, [isVideo, measurementSource, postId, url])
 
-  const source = isUploaded ? media.source : resolveMediaUrl(url)
-  if (isUploaded && isVideo && !videoRequested) {
-    return <div ref={media.containerRef} className="relative flex min-h-24 w-full items-center justify-center rounded-xl bg-slate-900">
-      <button type="button" onClick={() => setRequestedVideoUrl(url)} className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white hover:bg-white/25">
-        Load video
-      </button>
-    </div>
-  }
-  if (isUploaded && media.error) {
-    return <div ref={media.containerRef} className="flex flex-col items-start gap-2">
-      <p className="text-sm text-rose-700" role="alert">{media.error}</p>
-      <button type="button" onClick={media.retry} className="text-sm font-semibold text-indigo-700 underline">Retry media</button>
-    </div>
-  }
-  if (isUploaded && !source) {
-    return <div ref={media.containerRef} className="flex min-h-12 w-full items-center text-sm text-slate-500" role="status">
-      Media will load when it is near the screen…
-    </div>
-  }
+  const source = isUploaded ? loaded.url === url ? loaded.source : '' : resolveMediaUrl(url)
+  if (isUploaded && loaded.url !== url) return <p className="text-sm text-slate-500" role="status">Loading media…</p>
+  if (isUploaded && loaded.url === url && loaded.error) return <p className="text-sm text-rose-700" role="alert">{loaded.error}</p>
   if (isVideo) {
-    return <video ref={videoRef} src={source} controls playsInline preload="none" className={className} aria-label={alt} />
+    return <video ref={videoRef} src={source} controls muted={autoPlay} autoPlay={autoPlay && active} loop={autoPlay} playsInline preload="metadata" className={className} aria-label={alt} />
   }
-  return <img src={source} alt={alt} loading="lazy" decoding="async" className={className} />
+  return <img src={source} alt={alt} className={className} />
 }

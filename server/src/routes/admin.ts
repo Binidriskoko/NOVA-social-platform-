@@ -700,23 +700,10 @@ adminRouter.get('/revenue', requireAdminAccess, async (_req, res) => {
     databaseAvailable ? prisma.creatorLedgerEntry.findMany() : Promise.resolve(commerceStore.state.creatorLedger),
     databaseAvailable ? prisma.financialLedgerEntry.findMany() : Promise.resolve(commerceStore.state.financialLedger),
     databaseAvailable ? prisma.creatorPayoutRequest.findMany() : Promise.resolve(commerceStore.state.creatorPayouts),
-    databaseAvailable ? prisma.paymentIntent.findMany({ where: { status: 'SUCCESS' }, select: { amountCents: true, purpose: true, targetId: true } }) : Promise.resolve(commerceStore.state.paymentIntents.filter((intent) => intent.status === 'SUCCESS')),
+    databaseAvailable ? prisma.paymentIntent.findMany({ where: { status: 'SUCCESS' }, select: { amountCents: true } }) : Promise.resolve(commerceStore.state.paymentIntents.filter((intent) => intent.status === 'SUCCESS')),
     databaseAvailable ? prisma.adEvent.findMany({ select: { eventType: true, amountCents: true } }) : Promise.resolve(commerceStore.state.adEvents),
   ]);
-  const representedSubscriptionIds = new Set(
-    paymentIntents
-      .filter((intent) => intent.purpose === 'PLATFORM_SUBSCRIPTION')
-      .map((intent) => intent.targetId),
-  );
-  const successfulPayments = databaseAvailable
-    ? paymentIntents
-    : [
-        ...paymentIntents,
-        ...socialStore.state.payments.filter((payment) =>
-          ['SUCCESS', 'PAID'].includes(payment.status) && !representedSubscriptionIds.has(payment.subscriptionId),
-        ),
-      ];
-  const grossRevenue = successfulPayments.reduce((sum, payment) => sum + Number(payment.amountCents ?? 0), 0);
+  const grossRevenue = paymentIntents.reduce((sum, payment) => sum + Number(payment.amountCents), 0);
   const platformRevenue = financialEntries.filter((entry) => entry.ownerId === 'platform').reduce((sum, entry) => sum + (entry.direction === 'CREDIT' ? Number(entry.amountCents) : -Number(entry.amountCents)), 0);
   const creatorNetEarnings = creatorEntries.filter((entry) => ['SUBSCRIPTION', 'SUBSCRIPTION_REFUND'].includes(entry.type)).reduce((sum, entry) => sum + Number(entry.amountCents), 0);
   const adSpendCents = adEvents.reduce((sum, event) => sum + Number(event.amountCents), 0);

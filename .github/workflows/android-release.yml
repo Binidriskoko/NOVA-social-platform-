@@ -32,7 +32,7 @@ jobs:
         with:
           packages: 'platforms;android-35 build-tools;35.0.0'
 
-      - name: Require the pinned release signing identity
+      - name: Require the existing release signing identity
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -53,7 +53,7 @@ jobs:
           fingerprint="$(printf '%s' "$certificate" | sed 's/.*=//' | tr -d ':' | tr '[:lower:]' '[:upper:]')"
           expected='C81B2766C700A37A096C7A26F4F92DA73480F55F6221D1C660AC90F4508007DE'
           if [ "$fingerprint" != "$expected" ]; then
-            echo "Configured signing certificate does not match the pinned release certificate; refusing to publish." >&2
+            echo "Configured signing certificate does not match the existing public APK; refusing to publish." >&2
             exit 1
           fi
           {

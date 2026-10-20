@@ -2,52 +2,37 @@ import { lazy, Suspense } from 'react'
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { AuthProvider, useAuth } from './context/AuthContext'
+import { CommunitiesPage } from './pages/CommunitiesPage'
+import { ExplorePage } from './pages/ExplorePage'
+import { HomePage } from './pages/HomePage'
+import { MessagesPage } from './pages/MessagesPage'
+import { NotificationsPage } from './pages/NotificationsPage'
+import { ProfilePage } from './pages/ProfilePage'
+import { SettingsPage } from './pages/SettingsPage'
+import { AuthPage } from './pages/AuthPage'
+import { AdminPage } from './pages/AdminPage'
+import { DownloadPage } from './pages/DownloadPage'
+import { AiPage } from './pages/AiPage'
+import { UpdatesPage } from './pages/UpdatesPage'
+import { VideosPage } from './pages/VideosPage'
+import { CompleteProfilePage } from './pages/CompleteProfilePage'
+import { CreatorMonetizationPage } from './pages/CreatorMonetizationPage'
+import { AdCampaignsPage } from './pages/AdCampaignsPage'
+import { CreatePage } from './pages/CreatePage'
 import { UpdateChecker } from './components/UpdateChecker'
 
-const HomePage = lazy(() => import('./pages/HomePage').then(({ HomePage: page }) => ({ default: page })))
-const AuthPage = lazy(() => import('./pages/AuthPage').then(({ AuthPage: page }) => ({ default: page })))
-const DownloadPage = lazy(() => import('./pages/DownloadPage').then(({ DownloadPage: page }) => ({ default: page })))
-const ExplorePage = lazy(() => import('./pages/ExplorePage').then(({ ExplorePage: page }) => ({ default: page })))
-const MessagesPage = lazy(() => import('./pages/MessagesPage').then(({ MessagesPage: page }) => ({ default: page })))
-const NotificationsPage = lazy(() => import('./pages/NotificationsPage').then(({ NotificationsPage: page }) => ({ default: page })))
-const SettingsPage = lazy(() => import('./pages/SettingsPage').then(({ SettingsPage: page }) => ({ default: page })))
-const AdminPage = lazy(() => import('./pages/AdminPage').then(({ AdminPage: page }) => ({ default: page })))
-const AiPage = lazy(() => import('./pages/AiPage').then(({ AiPage: page }) => ({ default: page })))
-const UpdatesPage = lazy(() => import('./pages/UpdatesPage').then(({ UpdatesPage: page }) => ({ default: page })))
-const VideosPage = lazy(() => import('./pages/VideosPage').then(({ VideosPage: page }) => ({ default: page })))
-const CompleteProfilePage = lazy(() => import('./pages/CompleteProfilePage').then(({ CompleteProfilePage: page }) => ({ default: page })))
-const CreatorMonetizationPage = lazy(() => import('./pages/CreatorMonetizationPage').then(({ CreatorMonetizationPage: page }) => ({ default: page })))
-const AdCampaignsPage = lazy(() => import('./pages/AdCampaignsPage').then(({ AdCampaignsPage: page }) => ({ default: page })))
-const CreatePage = lazy(() => import('./pages/CreatePage').then(({ CreatePage: page }) => ({ default: page })))
-const CommunitiesPage = lazy(() => import('./pages/CommunitiesPage').then(({ CommunitiesPage: page }) => ({ default: page })))
-const ProfilePage = lazy(() => import('./pages/ProfilePage').then(({ ProfilePage: page }) => ({ default: page })))
 const LivePage = lazy(() => import('./pages/LivePage').then(({ LivePage: page }) => ({ default: page })))
 const CallsPage = lazy(() => import('./pages/CallsPage').then(({ CallsPage: page }) => ({ default: page })))
 
-function RouteContentLoading() {
-  return <div className="p-6 text-sm text-slate-600" role="status">Loading page…</div>
-}
-
-function StartupShell() {
-  return (
-    <main className="min-h-screen bg-slate-50 text-slate-900" aria-label="NOVAKOKO startup">
-      <header className="flex h-14 items-center border-b border-slate-200 bg-white px-5">
-        <span className="text-sm font-bold tracking-wide text-blue-800">NOVAKOKO</span>
-      </header>
-      <div className="mx-auto max-w-7xl px-4 py-6">
-        <div className="h-5 w-28 animate-pulse rounded bg-slate-200" />
-        <div className="mt-5 h-24 animate-pulse rounded-lg bg-white ring-1 ring-slate-200" />
-        <p className="mt-4 text-xs text-slate-500" role="status">Checking your session…</p>
-      </div>
-    </main>
-  )
+function MediaPageLoading() {
+  return <div className="p-6 text-sm text-slate-600" role="status">Loading media tools…</div>
 }
 
 function PublicRoute() {
   const { isAuthenticated, isLoading } = useAuth()
 
   if (isLoading) {
-    return <StartupShell />
+    return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm font-medium text-slate-600">Loading...</div>
   }
 
   if (isAuthenticated) {
@@ -58,24 +43,24 @@ function PublicRoute() {
 }
 
 function ProtectedRoute() {
-  const { isAuthenticated, isLoading, user } = useAuth()
+  const { isAuthenticated, isLoading } = useAuth()
 
   if (isLoading) {
-    return <StartupShell />
+    return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm font-medium text-slate-600">Loading...</div>
   }
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />
   }
 
-  return <div key={user?.id ?? 'anonymous'} className="contents"><Outlet /></div>
+  return <Outlet />
 }
 
 function AdminRoute() {
   const { isAuthenticated, isLoading, user } = useAuth()
 
   if (isLoading) {
-    return <StartupShell />
+    return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm font-medium text-slate-600">Loading...</div>
   }
 
   if (!isAuthenticated) {
@@ -92,33 +77,33 @@ function AdminRoute() {
 function AppRoutes() {
   return (
     <Routes>
-      <Route path="/download" element={<Suspense fallback={<RouteContentLoading />}><DownloadPage /></Suspense>} />
+      <Route path="/download" element={<DownloadPage />} />
       <Route element={<PublicRoute />}>
-        <Route path="/login" element={<Suspense fallback={<RouteContentLoading />}><AuthPage mode="login" /></Suspense>} />
-        <Route path="/register" element={<Suspense fallback={<RouteContentLoading />}><AuthPage mode="register" /></Suspense>} />
+        <Route path="/login" element={<AuthPage mode="login" />} />
+        <Route path="/register" element={<AuthPage mode="register" />} />
       </Route>
 
       <Route element={<ProtectedRoute />}>
-        <Route path="/complete-profile" element={<Suspense fallback={<RouteContentLoading />}><CompleteProfilePage /></Suspense>} />
-        <Route path="/" element={<AppShell><Suspense fallback={<RouteContentLoading />}><HomePage /></Suspense></AppShell>} />
-        <Route path="/explore" element={<AppShell><Suspense fallback={<RouteContentLoading />}><ExplorePage /></Suspense></AppShell>} />
-        <Route path="/create" element={<AppShell><Suspense fallback={<RouteContentLoading />}><CreatePage /></Suspense></AppShell>} />
-        <Route path="/videos" element={<AppShell><Suspense fallback={<RouteContentLoading />}><VideosPage /></Suspense></AppShell>} />
-        <Route path="/notifications" element={<AppShell><Suspense fallback={<RouteContentLoading />}><NotificationsPage /></Suspense></AppShell>} />
-        <Route path="/messages" element={<AppShell><Suspense fallback={<RouteContentLoading />}><MessagesPage /></Suspense></AppShell>} />
-        <Route path="/updates" element={<AppShell><Suspense fallback={<RouteContentLoading />}><UpdatesPage /></Suspense></AppShell>} />
-        <Route path="/live" element={<AppShell><Suspense fallback={<RouteContentLoading />}><LivePage /></Suspense></AppShell>} />
-        <Route path="/calls" element={<AppShell><Suspense fallback={<RouteContentLoading />}><CallsPage /></Suspense></AppShell>} />
-        <Route path="/ai" element={<AppShell><Suspense fallback={<RouteContentLoading />}><AiPage /></Suspense></AppShell>} />
-        <Route path="/communities" element={<AppShell><Suspense fallback={<RouteContentLoading />}><CommunitiesPage /></Suspense></AppShell>} />
-        <Route path="/profile" element={<AppShell><Suspense fallback={<RouteContentLoading />}><ProfilePage /></Suspense></AppShell>} />
-        <Route path="/profile/:id" element={<AppShell><Suspense fallback={<RouteContentLoading />}><ProfilePage /></Suspense></AppShell>} />
-        <Route path="/settings" element={<AppShell><Suspense fallback={<RouteContentLoading />}><SettingsPage /></Suspense></AppShell>} />
-        <Route path="/creator/monetization" element={<AppShell><Suspense fallback={<RouteContentLoading />}><CreatorMonetizationPage /></Suspense></AppShell>} />
-        <Route path="/advertise" element={<AppShell><Suspense fallback={<RouteContentLoading />}><AdCampaignsPage /></Suspense></AppShell>} />
+        <Route path="/complete-profile" element={<CompleteProfilePage />} />
+        <Route path="/" element={<AppShell><HomePage /></AppShell>} />
+        <Route path="/explore" element={<AppShell><ExplorePage /></AppShell>} />
+        <Route path="/create" element={<AppShell><CreatePage /></AppShell>} />
+        <Route path="/videos" element={<AppShell><VideosPage /></AppShell>} />
+        <Route path="/notifications" element={<AppShell><NotificationsPage /></AppShell>} />
+        <Route path="/messages" element={<AppShell><MessagesPage /></AppShell>} />
+        <Route path="/updates" element={<AppShell><UpdatesPage /></AppShell>} />
+        <Route path="/live" element={<Suspense fallback={<MediaPageLoading />}><AppShell><LivePage /></AppShell></Suspense>} />
+        <Route path="/calls" element={<Suspense fallback={<MediaPageLoading />}><AppShell><CallsPage /></AppShell></Suspense>} />
+        <Route path="/ai" element={<AppShell><AiPage /></AppShell>} />
+        <Route path="/communities" element={<AppShell><CommunitiesPage /></AppShell>} />
+        <Route path="/profile" element={<AppShell><ProfilePage /></AppShell>} />
+        <Route path="/profile/:id" element={<AppShell><ProfilePage /></AppShell>} />
+        <Route path="/settings" element={<AppShell><SettingsPage /></AppShell>} />
+        <Route path="/creator/monetization" element={<AppShell><CreatorMonetizationPage /></AppShell>} />
+        <Route path="/advertise" element={<AppShell><AdCampaignsPage /></AppShell>} />
 
         <Route element={<AdminRoute />}>
-          <Route path="/admin" element={<AppShell><Suspense fallback={<RouteContentLoading />}><AdminPage /></Suspense></AppShell>} />
+          <Route path="/admin" element={<AppShell><AdminPage /></AppShell>} />
         </Route>
       </Route>
 

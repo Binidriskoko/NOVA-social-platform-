@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { authSessionReducer, initialAuthSessionState } from '../src/lib/authSession'
-import { apiRequest, ApiError, fetchMediaBlob } from '../src/lib/api'
+import { apiRequest, ApiError } from '../src/lib/api'
 import { loginUser, logoutUser } from '../src/lib/auth'
 import { openAuthenticatedEventStream } from '../src/lib/eventStream'
 import { storeAccessToken } from '../src/lib/session'
@@ -297,26 +297,6 @@ describe('browser authentication session', () => {
     await timeoutAssertion
     expect(fetchMock).toHaveBeenCalledTimes(1)
     vi.useRealTimers()
-  })
-
-  it('times out media reads without retrying and clears credentials after an unauthorized response', async () => {
-    vi.useFakeTimers()
-    fetchMock.mockImplementation((_input, init) => new Promise((_resolve, reject) => {
-      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
-    }))
-    const mediaRequest = fetchMediaBlob('/api/media/files/clip.mp4', new AbortController().signal)
-    const mediaTimeoutAssertion = expect(mediaRequest).rejects.toMatchObject({ code: 'TIMEOUT', status: null })
-    await vi.advanceTimersByTimeAsync(15_000)
-    await mediaTimeoutAssertion
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-
-    vi.useRealTimers()
-    storedValues.clear()
-    storeAccessToken(createToken())
-    fetchMock.mockResolvedValueOnce(new Response('', { status: 401 }))
-    await expect(fetchMediaBlob('/api/media/files/private.jpg', new AbortController().signal))
-      .rejects.toMatchObject({ status: 401, code: 'AUTH_ERROR' })
-    expect(storedValues.size).toBe(0)
   })
 
   it('preserves caller cancellation instead of reporting it as a timeout', async () => {

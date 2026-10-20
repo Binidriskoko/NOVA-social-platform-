@@ -1,12 +1,13 @@
 import { clearStoredAccessToken, getStoredAccessToken } from './session'
-import { resolveApiBaseUrl } from './apiBaseUrl'
 import { Capacitor } from '@capacitor/core'
 
-export const API_BASE_URL = resolveApiBaseUrl(
-  import.meta.env.VITE_API_BASE_URL,
-  Capacitor.getPlatform(),
-  import.meta.env.PROD,
-)
+const productionApiBaseUrl = 'https://nova-social-platform-api.onrender.com'
+const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim()
+  || (Capacitor.getPlatform() === 'android'
+    ? productionApiBaseUrl
+    : import.meta.env.PROD ? '' : productionApiBaseUrl)
+
+export const API_BASE_URL = configuredApiBaseUrl.replace(/\/$/, '')
 
 export function resolveMediaUrl(url: string | null | undefined) {
   if (!url) return '';
@@ -84,37 +85,9 @@ export async function fetchMediaBlob(mediaUrl: string, signal: AbortSignal) {
   const headers = new Headers()
   const accessToken = getStoredAccessToken()
   if (accessToken) headers.set('Authorization', `******`)
-  const controller = new AbortController()
-  let timedOut = false
-  const timeoutId = setTimeout(() => {
-    timedOut = true
-    controller.abort(new DOMException('The media request timed out.', 'TimeoutError'))
-  }, 15000)
-  const abortFromRequest = () => controller.abort(signal.reason)
-
-  if (signal.aborted) abortFromRequest()
-  else signal.addEventListener('abort', abortFromRequest, { once: true })
-
-  try {
-    const response = await fetch(resolveMediaUrl(mediaUrl), {
-      credentials: 'include',
-      headers,
-      signal: controller.signal,
-    })
-    if (!response.ok) {
-      if (response.status === 401) clearStoredAccessToken()
-      throw new ApiError(response.status, 'Unable to load this attachment.')
-    }
-    return await response.blob()
-  } catch (error) {
-    if (timedOut) throw createTransportError('TIMEOUT')
-    if (signal.aborted) throw error
-    if (error instanceof TypeError) throw createTransportError('NETWORK_ERROR')
-    throw error
-  } finally {
-    clearTimeout(timeoutId)
-    signal.removeEventListener('abort', abortFromRequest)
-  }
+  const response = await fetch(resolveMediaUrl(mediaUrl), { credentials: 'include', headers, signal })
+  if (!response.ok) throw new ApiError(response.status, 'Unable to load this attachment.')
+  return response.blob()
 }
 
 export class ApiError extends Error {

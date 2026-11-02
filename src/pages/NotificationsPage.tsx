@@ -88,7 +88,7 @@ export function NotificationsPage() {
                   <Icon className="h-4 w-4" aria-hidden="true" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm text-slate-700"><span className="font-semibold text-slate-900">NOVAKOKO</span> {item.message}</p>
+                  <p className="text-sm text-slate-700"><span className="font-semibold text-slate-900">novachat</span> {item.message}</p>
                   {item.type === 'live_started' && item.link ? <Link to={item.link} className="mt-2 inline-flex min-h-10 items-center rounded-lg px-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-100">Watch live</Link> : null}
                   <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
                     <span>{config.label}</span>

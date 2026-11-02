@@ -8,6 +8,8 @@ export interface MediaStorage {
   setOwner(key: string, ownerUserId: string): Promise<boolean>;
   delete(key: string): Promise<void>;
   get(key: string): Promise<{ bytes: Buffer; contentType: string; ownerUserId: string | null } | null>;
+  getMetadata(key: string): Promise<{ size: number; contentType: string; ownerUserId: string | null } | null>;
+  getRange(key: string, start: number, length: number): Promise<Buffer | null>;
 }
 
 export class MediaStorageUnavailableError extends Error {
@@ -51,6 +53,22 @@ class MemoryMediaStorage implements MediaStorage {
       contentType: object.contentType,
       ownerUserId: object.ownerUserId,
     };
+  }
+
+  async getMetadata(key: string) {
+    const object = this.objects.get(key);
+    if (!object) return null;
+    return {
+      size: object.bytes.length,
+      contentType: object.contentType,
+      ownerUserId: object.ownerUserId,
+    };
+  }
+
+  async getRange(key: string, start: number, length: number) {
+    const object = this.objects.get(key);
+    if (!object) return null;
+    return Buffer.from(object.bytes.subarray(start, start + length));
   }
 }
 
@@ -117,6 +135,29 @@ class DatabaseMediaStorage implements MediaStorage {
       contentType: object.contentType,
       ownerUserId: object.ownerUserId,
     };
+  }
+
+  async getMetadata(key: string) {
+    const objects = await prisma.$queryRaw<Array<{
+      size: number;
+      contentType: string;
+      ownerUserId: string | null;
+    }>>`
+      SELECT octet_length("bytes")::integer AS "size", "contentType", "ownerUserId"
+      FROM "RegistrationMediaObject"
+      WHERE "key" = ${key}
+    `;
+    return objects[0] ?? null;
+  }
+
+  async getRange(key: string, start: number, length: number) {
+    const objects = await prisma.$queryRaw<Array<{ bytes: Uint8Array }>>`
+      SELECT substring("bytes" FROM ${start + 1}::integer FOR ${length}::integer) AS "bytes"
+      FROM "RegistrationMediaObject"
+      WHERE "key" = ${key}
+    `;
+    const object = objects[0];
+    return object ? Buffer.from(object.bytes) : null;
   }
 }
 

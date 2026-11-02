@@ -635,7 +635,7 @@ export function LivePage() {
   const shareLive = async (live: LiveSession) => {
     const url = `${window.location.origin}/live?live=${encodeURIComponent(live.id)}`
     try {
-      if (navigator.share) await navigator.share({ title: live.title, text: `Watch ${live.title} on NOVAKOKO`, url })
+      if (navigator.share) await navigator.share({ title: live.title, text: `Watch ${live.title} on novachat`, url })
       else if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(url)
       else if (window.prompt('Copy this live broadcast link:', url) === null) return
       setShareNotice('Live broadcast link is ready to share.')
@@ -706,7 +706,7 @@ export function LivePage() {
           <div className="min-w-0">
             <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide"><span className="rounded-full bg-rose-600 px-2 py-1">LIVE</span><span className="inline-flex items-center gap-1"><Users className="h-4 w-4" aria-hidden="true" />{activeLive.viewerCount}</span></p>
             <h1 className="mt-1 max-w-[55vw] truncate text-base font-semibold sm:max-w-md">{activeLive.title}</h1>
-            <p className="truncate text-xs text-white/75">{isHost ? user?.name : activeLive.host?.name ?? 'NOVAKOKO host'}</p>
+            <p className="truncate text-xs text-white/75">{isHost ? user?.name : activeLive.host?.name ?? 'novachat host'}</p>
           </div>
         </div>
         <div className="flex max-w-full flex-wrap justify-end gap-2">
@@ -766,7 +766,7 @@ export function LivePage() {
         {lives.map((live) => (
           <li key={live.id} className="flex flex-wrap items-center gap-3 p-4">
             <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-50 text-indigo-700"><Headphones className="h-5 w-5" aria-hidden="true" /></span>
-            <div className="min-w-0 flex-1"><h3 className="truncate font-semibold text-slate-900">{live.title}</h3><p className="mt-1 text-sm text-slate-500">{live.description || `Hosted by ${live.host?.name ?? (live.hostId === user?.id ? 'you' : 'a NOVAKOKO member')}`} · {live.viewerCount} viewers · {live.status}</p></div>
+            <div className="min-w-0 flex-1"><h3 className="truncate font-semibold text-slate-900">{live.title}</h3><p className="mt-1 text-sm text-slate-500">{live.description || `Hosted by ${live.host?.name ?? (live.hostId === user?.id ? 'you' : 'a novachat member')}`} · {live.viewerCount} viewers · {live.status}</p></div>
             {live.hostId === user?.id && live.status === 'paused' ? <Button variant="primary" size="sm" onClick={() => void startBroadcast(live)} disabled={busy}>Start broadcasting</Button> : null}
             {live.hostId === user?.id && live.status === 'live' && !hostRoom ? <Button variant="secondary" size="sm" onClick={() => void endBroadcast(live)} disabled={busy}>Finish ending</Button> : null}
             {live.hostId !== user?.id && live.status === 'live' && joinedLive?.id !== live.id ? <Button variant="primary" size="sm" onClick={() => void joinLive(live)} disabled={busy}>Join live</Button> : null}

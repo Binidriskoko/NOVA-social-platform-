@@ -66,7 +66,7 @@ export function AuthPage({ mode }: AuthPageProps) {
       nextFieldErrors.confirmPassword = 'Passwords do not match.'
     }
     if (isRegister && !formData.communityRulesAccepted) {
-      nextFieldErrors.communityRulesAccepted = 'You must accept the NOVAKOKO Community & Safety Rules.'
+      nextFieldErrors.communityRulesAccepted = 'You must accept the novachat Community & Safety Rules.'
     }
 
     if (Object.keys(nextFieldErrors).length > 0) {
@@ -114,7 +114,7 @@ export function AuthPage({ mode }: AuthPageProps) {
                 N
               </div>
               <div>
-                <p className="text-xs uppercase tracking-[0.32em] text-violet-100">NOVAKOKO</p>
+                <p className="text-xs uppercase tracking-[0.32em] text-violet-100">novachat</p>
                 <p className="text-sm text-violet-100">Safe social connection</p>
               </div>
             </div>
@@ -131,7 +131,7 @@ export function AuthPage({ mode }: AuthPageProps) {
               <p className="font-semibold">Safety-first moderation</p>
             </div>
             <p className="mt-3 text-sm leading-6 text-violet-100">
-              NOVAKOKO is a family-friendly platform with tools to help keep every space respectful, secure, and welcoming.
+              novachat is a family-friendly platform with tools to help keep every space respectful, secure, and welcoming.
             </p>
           </div>
         </div>
@@ -140,7 +140,7 @@ export function AuthPage({ mode }: AuthPageProps) {
           <div className="mb-6 flex items-center justify-between">
             <div>
               <p className="text-xs uppercase tracking-[0.28em] text-violet-600">{isRegister ? 'Create account' : 'Welcome back'}</p>
-              <h2 className="mt-2 text-3xl font-semibold text-slate-900">{isRegister ? 'Join NOVAKOKO' : 'Log in to NOVAKOKO'}</h2>
+              <h2 className="mt-2 text-3xl font-semibold text-slate-900">{isRegister ? 'Join novachat' : 'Log in to novachat'}</h2>
             </div>
             <Sparkles className="h-5 w-5 text-violet-600" aria-hidden="true" />
           </div>
@@ -208,9 +208,9 @@ export function AuthPage({ mode }: AuthPageProps) {
                 </label>
 
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-                  <p className="font-semibold">NOVAKOKO Community &amp; Safety Rules</p>
+                  <p className="font-semibold">novachat Community &amp; Safety Rules</p>
                   <p className="mt-2 leading-6 text-amber-800">
-                    NOVAKOKO is a family-friendly platform. Explicit sexual content, exploitation, harassment, and abusive behavior are not allowed.
+                    novachat is a family-friendly platform. Explicit sexual content, exploitation, harassment, and abusive behavior are not allowed.
                   </p>
                   <label className="mt-3 flex items-start gap-3 text-sm text-amber-900">
                     <input
@@ -220,7 +220,7 @@ export function AuthPage({ mode }: AuthPageProps) {
                       className="mt-1 h-4 w-4 rounded border-amber-300 text-violet-600 focus:ring-violet-500"
                       aria-invalid={Boolean(fieldErrors.communityRulesAccepted)}
                     />
-                    <span>I understand and agree to follow NOVAKOKO Community &amp; Safety Rules.</span>
+                    <span>I understand and agree to follow novachat Community &amp; Safety Rules.</span>
                   </label>
                   {fieldErrors.communityRulesAccepted ? <span className="mt-1 block text-xs text-rose-700">{fieldErrors.communityRulesAccepted}</span> : null}
                 </div>

@@ -30,8 +30,8 @@ async function uploadFile(path: string, file: File, onProgress?: (progress: numb
     request.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) onProgress?.(Math.min(99, Math.floor(event.loaded / event.total * 100)))
     }
-    request.onerror = () => reject(new ApiError(null, 'Unable to reach the NOVAKOKO API. Check your connection and try again shortly.', undefined, 'NETWORK_ERROR'))
-    request.ontimeout = () => reject(new ApiError(null, 'The NOVAKOKO upload timed out. Please try again shortly.', undefined, 'TIMEOUT'))
+    request.onerror = () => reject(new ApiError(null, 'Unable to reach the novachat API. Check your connection and try again shortly.', undefined, 'NETWORK_ERROR'))
+    request.ontimeout = () => reject(new ApiError(null, 'The novachat upload timed out. Please try again shortly.', undefined, 'TIMEOUT'))
     request.onabort = () => reject(new DOMException('The upload was cancelled.', 'AbortError'))
     request.onload = () => {
       const contentType = request.getResponseHeader('content-type')?.split(';', 1)[0].trim().toLowerCase() ?? ''
@@ -40,9 +40,9 @@ async function uploadFile(path: string, file: File, onProgress?: (progress: numb
         payload = JSON.parse(request.responseText)
       } catch {
         if (request.status >= 200 && request.status < 300) {
-          reject(new ApiError(request.status, 'The NOVAKOKO API returned an invalid upload response.'))
+          reject(new ApiError(request.status, 'The novachat API returned an invalid upload response.'))
         } else {
-          reject(new ApiError(request.status, `The NOVAKOKO API returned HTTP ${request.status} while uploading.`))
+          reject(new ApiError(request.status, `The novachat API returned HTTP ${request.status} while uploading.`))
         }
         return
       }
@@ -54,7 +54,7 @@ async function uploadFile(path: string, file: File, onProgress?: (progress: numb
       if (contentType !== 'application/json' || typeof payload !== 'object' || payload === null
         || typeof (payload as { mediaUrl?: unknown }).mediaUrl !== 'string'
         || typeof (payload as { contentType?: unknown }).contentType !== 'string') {
-        reject(new ApiError(request.status, 'The NOVAKOKO API returned an invalid upload response.'))
+        reject(new ApiError(request.status, 'The novachat API returned an invalid upload response.'))
         return
       }
       onProgress?.(100)
@@ -134,8 +134,8 @@ function isAbortError(error: unknown) {
 
 function createTransportError(code: 'NETWORK_ERROR' | 'TIMEOUT') {
   const message = code === 'TIMEOUT'
-    ? 'The NOVAKOKO API request timed out. Please try again shortly.'
-    : 'Unable to reach the NOVAKOKO API. Check your connection and try again shortly.'
+    ? 'The novachat API request timed out. Please try again shortly.'
+    : 'Unable to reach the novachat API. Check your connection and try again shortly.'
   return new ApiError(null, message, undefined, code)
 }
 
@@ -304,7 +304,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
 
     throw new ApiError(
       response.status,
-      `The NOVAKOKO API gateway returned HTTP ${response.status} with ${contentType || 'an unlabelled'} content instead of JSON.`,
+      `The novachat API gateway returned HTTP ${response.status} with ${contentType || 'an unlabelled'} content instead of JSON.`,
       details,
       'GATEWAY_ERROR',
     )
@@ -315,7 +315,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
     payload = rawText ? JSON.parse(rawText) : undefined
   } catch {
     if (response.ok) {
-      throw new ApiError(response.status, 'The NOVAKOKO API returned an invalid response.')
+      throw new ApiError(response.status, 'The novachat API returned an invalid response.')
     }
     payload = { contentType: contentType || null, body: rawText }
   }
@@ -325,10 +325,10 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
       clearStoredAccessToken()
     }
     const fallback = response.status === 429
-      ? 'The NOVAKOKO API is rate limiting requests (HTTP 429). Please wait and try again.'
+      ? 'The novachat API is rate limiting requests (HTTP 429). Please wait and try again.'
       : response.status >= 500
-        ? `The NOVAKOKO API is temporarily unavailable (HTTP ${response.status}). Please try again shortly.`
-        : `The NOVAKOKO API request failed with HTTP ${response.status}.`
+        ? `The novachat API is temporarily unavailable (HTTP ${response.status}). Please try again shortly.`
+        : `The novachat API request failed with HTTP ${response.status}.`
     throw new ApiError(response.status, extractErrorMessage(payload, fallback), payload)
   }
 

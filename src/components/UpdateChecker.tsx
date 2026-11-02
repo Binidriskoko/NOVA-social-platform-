@@ -43,7 +43,7 @@ export function UpdateChecker() {
         })
         .catch((error: unknown) => {
           metadataRequest = undefined
-          if (active) console.warn('Unable to check for NOVAKOKO updates.', error)
+          if (active) console.warn('Unable to check for novachat updates.', error)
         })
     }
     checkForUpdates()
@@ -63,7 +63,7 @@ export function UpdateChecker() {
       className="fixed inset-x-3 top-3 z-50 mx-auto flex max-w-3xl items-start gap-3 rounded-xl border border-indigo-200 bg-white p-4 text-sm text-indigo-950 shadow-xl"
     >
       <div className="min-w-0 flex-1">
-        <p className="font-semibold">NOVAKOKO v{release.versionName} is available</p>
+        <p className="font-semibold">novachat v{release.versionName} is available</p>
         <p className="mt-1 whitespace-pre-line text-indigo-800">{release.releaseNotes}</p>
         <p className="mt-2 text-xs text-slate-600">
           Android will ask you to approve installing the downloaded APK.

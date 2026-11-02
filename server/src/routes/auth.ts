@@ -39,6 +39,10 @@ const loginSchema = z.object({
   message: 'Enter your username, phone number, or email address.',
 });
 
+const appealSchema = z.object({
+  reason: z.string().trim().min(20).max(2000),
+});
+
 export const authRouter = Router();
 
 function sessionCookieOptions() {
@@ -282,6 +286,95 @@ authRouter.get('/me', requireAuth, async (req, res) => {
   }
 
   return res.json({ user });
+});
+
+authRouter.get('/appeals/me', requireAuth, async (req, res, next) => {
+  try {
+    let appeals;
+    const databaseAvailable = await isDatabaseAvailable();
+    if (databaseAvailable) {
+      appeals = await prisma.appeal.findMany({
+        where: { userId: req.user!.id },
+        select: {
+          id: true,
+          userId: true,
+          originalAction: true,
+          reason: true,
+          status: true,
+          reviewerId: true,
+          reviewerNote: true,
+          createdAt: true,
+          reviewedAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+    } else {
+      appeals = fallbackStore.listAppeals().filter((appeal) => appeal.userId === req.user!.id);
+    }
+    return res.json({ appeals, persistence: databaseAvailable ? 'database' : 'in-memory' });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+authRouter.post('/appeals', requireAuth, async (req, res, next) => {
+  try {
+    const payload = appealSchema.parse(req.body ?? {});
+    const status = req.user!.status;
+    if (!['SUSPENDED', 'BANNED', 'DEACTIVATED'].includes(status)) {
+      return res.status(403).json({ message: 'Only restricted accounts can appeal an account action.' });
+    }
+
+    if (await isDatabaseAvailable()) {
+      const existing = await prisma.appeal.findFirst({
+        where: { userId: req.user!.id, status: 'OPEN' },
+        select: { id: true },
+      });
+      if (existing) return res.status(409).json({ message: 'You already have an appeal awaiting review.' });
+      const appeal = await prisma.appeal.create({
+        data: {
+          userId: req.user!.id,
+          openAppealUserId: req.user!.id,
+          originalAction: `USER_${status}`,
+          reason: payload.reason,
+        },
+        select: {
+          id: true,
+          userId: true,
+          originalAction: true,
+          reason: true,
+          status: true,
+          reviewerId: true,
+          reviewerNote: true,
+          createdAt: true,
+          reviewedAt: true,
+        },
+      });
+      return res.status(201).json({ appeal, persistence: 'database' });
+    }
+
+    if (fallbackStore.listAppeals().some((appeal) => appeal.userId === req.user!.id && appeal.status === 'OPEN')) {
+      return res.status(409).json({ message: 'You already have an appeal awaiting review.' });
+    }
+    const appeal = fallbackStore.createAppeal({
+      userId: req.user!.id,
+      originalAction: `USER_${status}`,
+      reason: payload.reason,
+      status: 'OPEN',
+      reviewerId: null,
+      reviewerNote: null,
+      reviewedAt: null,
+    });
+    return res.status(201).json({ appeal, persistence: 'in-memory' });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ message: 'Enter an appeal reason between 20 and 2000 characters.' });
+    }
+    if (isUniqueConstraintError(error)) {
+      return res.status(409).json({ message: 'You already have an appeal awaiting review.' });
+    }
+    return next(error);
+  }
 });
 
 authRouter.post('/logout', async (req, res, next) => {

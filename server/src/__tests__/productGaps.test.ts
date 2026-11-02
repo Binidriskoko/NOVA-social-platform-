@@ -15,8 +15,8 @@ async function register(name: string) {
   const email = `${name.toLowerCase()}@example.com`;
   await request(app).post('/api/auth/register').send({ name, email, password: 'Password123', communityRulesAccepted: true });
   const login = await request(app).post('/api/auth/login').send({ email, password: 'Password123' });
-  const users = await request(app).get('/api/users');
-  return { auth: cookie(login), user: users.body.users.find((entry: { email: string }) => entry.email === email) };
+  const user = await request(app).get(`/api/users/${login.body.user.id}`);
+  return { auth: cookie(login), user: user.body.user };
 }
 
 describe('product area gaps', () => {

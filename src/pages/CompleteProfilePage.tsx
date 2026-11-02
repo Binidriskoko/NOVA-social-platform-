@@ -88,7 +88,7 @@ export function CompleteProfilePage() {
 
   return <main className="min-h-screen bg-[#f3f7f4] px-4 py-8 text-slate-900 sm:py-12">
     <div className="mx-auto max-w-xl">
-      <Link to="/" className="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 hover:text-slate-900"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> NOVAKOKO</Link>
+      <Link to="/" className="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 hover:text-slate-900"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> novachat</Link>
       <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-8">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#087b43]">Stage 2</p>
         <h1 className="mt-2 text-2xl font-semibold">Complete Your Profile</h1>

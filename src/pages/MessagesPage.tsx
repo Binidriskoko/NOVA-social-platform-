@@ -713,7 +713,7 @@ export function MessagesPage() {
   return (
     <div style={{ height: `${viewportHeight}px` }} className={`relative flex min-h-0 w-full flex-col overflow-hidden bg-white text-slate-900 ${keyboardOpen ? 'pb-0' : 'pb-[calc(4.1rem+env(safe-area-inset-bottom))]'}`}>
       <header className="z-20 flex h-14 shrink-0 items-center justify-between border-b border-slate-100 bg-white px-4 sm:px-6">
-        <div className="flex items-center gap-2"><div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#e8f5e9] text-sm font-black text-[#008f48]">N</div><p className="text-sm font-bold tracking-wide text-slate-900">NOVAKOKO</p></div>
+        <div className="flex items-center gap-2"><div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#e8f5e9] text-sm font-black text-[#008f48]">N</div><p className="text-sm font-bold tracking-wide text-slate-900">novachat</p></div>
         <div className="flex items-center gap-1">
           <Link to="/updates" aria-label="Open Status and Updates" title="Status and updates" className="rounded-full p-2 text-slate-700 hover:bg-slate-100"><Camera className="h-5 w-5" aria-hidden="true" /></Link>
           <div className="relative">

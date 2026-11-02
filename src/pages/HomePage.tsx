@@ -464,12 +464,12 @@ export function HomePage() {
               </div>
 
               <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-                <h3 className="font-bold text-slate-900">NOVAKOKO</h3>
+                <h3 className="font-bold text-slate-900">novachat</h3>
                 <p className="mt-2 text-sm leading-6 text-slate-600">
                   Connect • Chat • Share • Live • Grow
                 </p>
                 <Link to="/explore" className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-blue-700">
-                  Explore NOVAKOKO
+                  Explore novachat
                   <ArrowRight className="h-4 w-4" aria-hidden="true" />
                 </Link>
               </div>

@@ -331,6 +331,22 @@ describe('creator monetization and internal advertising', () => {
 
     const payout = await request(app).post('/api/creators/me/payouts').set('Cookie', creator.auth).set('Idempotency-Key', 'payout-test-key-1').send({ amountCents: 500 });
     expect(payout.status).toBe(201);
+    const earnings = (await request(app).get('/api/creators/me/monetization').set('Cookie', creator.auth)).body.earnings;
+    expect(earnings).toMatchObject({
+      estimatedEarningsCents: null,
+      confirmedEarningsCents: 1000,
+      pendingPayoutCents: 500,
+      withdrawableBalanceCents: 500,
+      paidCents: 0,
+    });
+    const adminEarnings = await request(app).get('/api/admin/earnings').set('Cookie', admin.auth);
+    expect(adminEarnings.body.metrics).toEqual({
+      estimatedEarningsCents: null,
+      confirmedEarningsCents: 1000,
+      pendingPayoutCents: 500,
+      paidCents: 0,
+      withdrawableBalanceCents: 500,
+    });
     expect((await request(app).post('/api/creators/me/payouts').set('Cookie', creator.auth).set('Idempotency-Key', 'payout-test-key-1').send({ amountCents: 500 })).status).toBe(200);
     expect((await request(app).patch(`/api/admin/finance/payouts/${payout.body.payout.id}`).set('Cookie', admin.auth).send({ status: 'FAILED', reason: 'Invalid transition' })).status).toBe(409);
     expect((await request(app).patch(`/api/admin/finance/payouts/${payout.body.payout.id}`).set('Cookie', admin.auth).send({ status: 'APPROVED', reason: 'Validated request' })).status).toBe(200);

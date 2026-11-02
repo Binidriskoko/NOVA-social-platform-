@@ -9,7 +9,7 @@
     "lint": "oxlint src",
     "start": "node dist/src/server.js",
     "start:prod": "node dist/src/server.js",
-    "test": "NODE_ENV=test vitest run --root ..",
+    "test": "NODE_ENV=test npm --prefix .. test -- --config vite.config.ts",
     "provision:local": "NODE_ENV=development tsx src/scripts/provision-local.ts",
     "provision:production": "NODE_ENV=production tsx src/scripts/provision-local.ts",
     "db:generate": "prisma generate",

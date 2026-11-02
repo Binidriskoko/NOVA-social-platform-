@@ -61,6 +61,12 @@ enum ReportStatus {
   REJECTED
 }
 
+enum AppealStatus {
+  OPEN
+  APPROVED
+  REJECTED
+}
+
 enum CommunityMemberRole {
   MEMBER
   MODERATOR
@@ -143,6 +149,8 @@ model User {
   blocksReceived           Block[]                   @relation("Blocked")
   reportsMade              Report[]                  @relation("Reporter")
   reportsAbout             Report[]                  @relation("ReportedUser")
+  appealsSubmitted         Appeal[]                  @relation("AppealSubject")
+  appealsReviewed          Appeal[]                  @relation("AppealReviewer")
   notifications            Notification[]            @relation("NotificationRecipient")
   notificationPreferences  NotificationPreference[]
   authoredStories          Story[]                    @relation("StoryAuthor")
@@ -270,6 +278,9 @@ model Post {
   content     String
   imageUrl    String?
   visibility  PostVisibility @default(PUBLIC)
+  moderationHiddenAt DateTime?
+  moderationHiddenById String?
+  moderationReason String?
   sourceLiveReplayId String? @unique
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
@@ -430,10 +441,14 @@ model Message {
   forwardedFromId String?
   editedAt        DateTime?
   expiresAt       DateTime?
+  moderationHiddenAt DateTime?
+  moderationHiddenById String?
+  moderationReason String?
 
   conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   sender       User              @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
   reactions    MessageReaction[]
+  reports      Report[]
 
   @@index([conversationId, createdAt])
   @@index([senderId])
@@ -462,6 +477,9 @@ model Comment {
   authorId  String
   parentId  String?
   content   String
+  moderationHiddenAt DateTime?
+  moderationHiddenById String?
+  moderationReason String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -528,6 +546,7 @@ model Report {
   reporterId   String
   postId       String?
   commentId    String?
+  messageId    String?
   targetUserId String?
   category     ReportCategory
   details      String?
@@ -538,11 +557,13 @@ model Report {
   reporter   User     @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
   post       Post?    @relation(fields: [postId], references: [id], onDelete: Cascade)
   comment    Comment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  message    Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
   targetUser User?    @relation("ReportedUser", fields: [targetUserId], references: [id], onDelete: SetNull)
 
   @@index([reporterId])
   @@index([postId])
   @@index([commentId])
+  @@index([messageId])
   @@index([targetUserId])
   @@index([status])
 }
@@ -778,6 +799,25 @@ model AdminAction {
   @@index([actorId])
   @@index([targetUserId])
   @@index([actionType])
+}
+
+model Appeal {
+  id             String        @id @default(cuid())
+  userId         String
+  openAppealUserId String?     @unique
+  originalAction String
+  reason         String
+  status         AppealStatus  @default(OPEN)
+  reviewerId     String?
+  reviewerNote   String?
+  createdAt      DateTime      @default(now())
+  reviewedAt     DateTime?
+
+  user     User  @relation("AppealSubject", fields: [userId], references: [id], onDelete: Cascade)
+  reviewer User? @relation("AppealReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@index([status, createdAt])
 }
 
 model CreatorProfile {

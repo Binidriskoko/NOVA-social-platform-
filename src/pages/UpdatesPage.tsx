@@ -180,7 +180,7 @@ export function UpdatesPage() {
   return (
     <div className="flex h-full min-h-0 flex-col bg-white text-slate-900">
       <header className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-slate-100 px-4">
-        <div className="min-w-0"><p className="text-xs font-bold text-slate-900">NOVAKOKO</p><h1 className="text-lg font-semibold">Status</h1></div>
+        <div className="min-w-0"><p className="text-xs font-bold text-slate-900">novachat</p><h1 className="text-lg font-semibold">Status</h1></div>
         <div className="flex shrink-0 items-center gap-1">
           <button type="button" onClick={openTextComposer} aria-label="Create a text status" title="Text status" className="rounded-full p-2 text-[#087b43] hover:bg-[#e8f5e9]"><PencilLine className="h-5 w-5" /></button>
           <button type="button" onClick={() => mediaInputRef.current?.click()} aria-label="Create a photo or video status" title="Media status" className="rounded-full p-2 text-[#087b43] hover:bg-[#e8f5e9]"><Camera className="h-5 w-5" /></button>

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import sharp from 'sharp';
 import { app } from '../app.js';
@@ -15,8 +15,8 @@ async function register(name: string) {
   const email = `${name.toLowerCase()}@example.com`;
   await request(app).post('/api/auth/register').send({ name, email, password: 'Password123', communityRulesAccepted: true });
   const login = await request(app).post('/api/auth/login').send({ email, password: 'Password123' });
-  const users = await request(app).get('/api/users');
-  return { auth: cookie(login), user: users.body.users.find((entry: { email: string }) => entry.email === email) };
+  const user = await request(app).get(`/api/users/${login.body.user.id}`);
+  return { auth: cookie(login), user: user.body.user };
 }
 
 describe('authenticated media uploads', () => {
@@ -159,6 +159,21 @@ describe('authenticated media uploads', () => {
       .set('Cookie', owner.auth)
       .attach('file', largeVideoBytes, { filename: 'large-clip.mp4', contentType: 'video/mp4' });
     expect(acceptedLargeVideo.status).toBe(201);
+    const storage = getMediaStorage('test');
+    const getWholeObject = vi.spyOn(storage, 'get');
+    const getChunk = vi.spyOn(storage, 'getRange');
+    const largePartial = await request(app)
+      .get(acceptedLargeVideo.body.mediaUrl)
+      .set('Cookie', owner.auth)
+      .set('Range', 'bytes=0-1048575');
+    expect(largePartial.status).toBe(206);
+    expect(largePartial.headers['content-length']).toBe('1048576');
+    expect(Buffer.from(largePartial.body)).toEqual(largeVideoBytes.subarray(0, 1024 * 1024));
+    expect(getWholeObject).not.toHaveBeenCalled();
+    expect(getChunk).toHaveBeenCalledTimes(4);
+    expect(getChunk.mock.calls.every(([, , length]) => length <= 256 * 1024)).toBe(true);
+    getWholeObject.mockRestore();
+    getChunk.mockRestore();
     expect((await request(app)
       .post('/api/media/attachments')
       .set('Cookie', owner.auth)
@@ -179,7 +194,41 @@ describe('authenticated media uploads', () => {
 
     expect(videoUpload.status).toBe(201);
     expect(videoUpload.body).toMatchObject({ contentType: 'video/mp4' });
-    expect((await request(app).get(videoUpload.body.mediaUrl).set('Cookie', owner.auth)).headers['content-type']).toContain('video/mp4');
+    const partialVideo = await request(app)
+      .get(videoUpload.body.mediaUrl)
+      .set('Cookie', owner.auth)
+      .set('Range', 'bytes=0-3');
+    expect(partialVideo.status).toBe(206);
+    expect(partialVideo.headers['accept-ranges']).toBe('bytes');
+    expect(partialVideo.headers['content-range']).toBe(`bytes 0-3/${videoBytes.length}`);
+    expect(partialVideo.headers['content-length']).toBe('4');
+    expect(Buffer.from(partialVideo.body)).toEqual(videoBytes.subarray(0, 4));
+    const fullVideo = await request(app).get(videoUpload.body.mediaUrl).set('Cookie', owner.auth);
+    expect(fullVideo.status).toBe(200);
+    expect(fullVideo.headers['content-type']).toContain('video/mp4');
+    expect(fullVideo.headers['content-length']).toBe(String(videoBytes.length));
+    expect(Buffer.from(fullVideo.body)).toEqual(videoBytes);
+    const headVideo = await request(app).head(videoUpload.body.mediaUrl).set('Cookie', owner.auth).set('Range', 'bytes=0-3');
+    expect(headVideo.status).toBe(206);
+    expect(headVideo.headers['content-range']).toBe(`bytes 0-3/${videoBytes.length}`);
+    expect(headVideo.headers['content-length']).toBe('4');
+    expect(headVideo.body).toEqual({});
+    expect((await request(app).get(videoUpload.body.mediaUrl).set('Range', 'bytes=0-3')).status).toBe(401);
+    const malformedRange = await request(app)
+      .get(videoUpload.body.mediaUrl)
+      .set('Cookie', owner.auth)
+      .set('Range', 'bytes=0-3,5-8');
+    expect(malformedRange.status).toBe(416);
+    expect(malformedRange.headers['content-range']).toBe(`bytes */${videoBytes.length}`);
+    const unsatisfiableRange = await request(app)
+      .get(videoUpload.body.mediaUrl)
+      .set('Cookie', owner.auth)
+      .set('Range', 'bytes=20-30');
+    expect(unsatisfiableRange.status).toBe(416);
+    const missingVideo = await request(app)
+      .get('/api/media/files/00000000-0000-4000-8000-000000000000.mp4')
+      .set('Cookie', owner.auth);
+    expect(missingVideo.status).toBe(404);
     expect((await request(app).post('/api/posts').set('Cookie', outsider.auth).send({
       content: 'Attempt to use another member video',
       imageUrl: videoUpload.body.mediaUrl,
@@ -218,6 +267,23 @@ describe('authenticated media uploads', () => {
       .attach('file', videoBytes, { filename: 'clip.mov', contentType: 'video/quicktime' });
     expect(wrongType.status).toBe(400);
     expect((await request(app).post('/api/media/videos').attach('file', videoBytes, { filename: 'clip.mp4', contentType: 'video/mp4' })).status).toBe(401);
+  }, 30_000);
+
+  it('serves empty video objects and rejects byte ranges for them', async () => {
+    const owner = await register('EmptyVideoOwner');
+    const stored = await getMediaStorage('test').putAttachment(Buffer.alloc(0), 'video/mp4', 'mp4', owner.user.id);
+
+    const fullResponse = await request(app).get(stored.publicUrl).set('Cookie', owner.auth);
+    expect(fullResponse.status).toBe(200);
+    expect(fullResponse.headers['content-length']).toBe('0');
+    expect(Buffer.from(fullResponse.body).length).toBe(0);
+
+    const rangeResponse = await request(app)
+      .get(stored.publicUrl)
+      .set('Cookie', owner.auth)
+      .set('Range', 'bytes=0-0');
+    expect(rangeResponse.status).toBe(416);
+    expect(rangeResponse.headers['content-range']).toBe('bytes */0');
   });
 
   it('lets group members view the saved group image and restricts group settings to admins', async () => {

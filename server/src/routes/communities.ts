@@ -44,6 +44,19 @@ async function canModerate(communityId: string, userId: string) {
   return member?.role === 'OWNER' || member?.role === 'MODERATOR';
 }
 
+async function getBlockedUserIds(userId: string) {
+  if (await isDatabaseAvailable()) {
+    const blocks = await prisma.block.findMany({
+      where: { OR: [{ blockerId: userId }, { blockedId: userId }] },
+      select: { blockerId: true, blockedId: true },
+    });
+    return blocks.map((block) => block.blockerId === userId ? block.blockedId : block.blockerId);
+  }
+  return socialStore.state.blocks
+    .filter((block) => block.blockerId === userId || block.blockedId === userId)
+    .map((block) => block.blockerId === userId ? block.blockedId : block.blockerId);
+}
+
 export const communitiesRouter = router;
 
 router.get('/communities', requireAuth, async (req, res) => {
@@ -109,16 +122,20 @@ router.get('/communities/:id', requireAuth, async (req, res) => {
   const community = await getCommunity(communityId);
   if (!community) return res.status(404).json({ message: 'Community not found.' });
   if (community.isPrivate && !(await getMember(communityId, req.user!.id))) return res.status(404).json({ message: 'Community not found.' });
+  const blockedUserIds = await getBlockedUserIds(req.user!.id);
   if (await isDatabaseAvailable()) {
     const [members, posts, mine] = await Promise.all([
       prisma.communityMember.findMany({ where: { communityId }, include: { user: { select: { id: true, name: true } } }, orderBy: { joinedAt: 'asc' } }),
-      prisma.post.findMany({ where: { communityId }, orderBy: { createdAt: 'desc' }, take: 30 }),
+      prisma.post.findMany({ where: { communityId, moderationHiddenAt: null, ...(blockedUserIds.length ? { authorId: { notIn: blockedUserIds } } : {}) }, orderBy: { createdAt: 'desc' }, take: 30 }),
       getMember(communityId, req.user!.id),
     ]);
     return res.json({ community: { ...community, members, posts, joined: Boolean(mine), myRole: mine?.role ?? null, memberCount: members.length } });
   }
   const members = socialStore.state.communityMembers.filter((member) => member.communityId === communityId).map((member) => ({ ...member, user: findUserById(member.userId) ? { id: member.userId, name: findUserById(member.userId)!.name } : null }));
-  const posts = socialStore.state.posts.filter((post) => post.communityId === communityId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const blocked = new Set(blockedUserIds);
+  const posts = socialStore.state.posts
+    .filter((post) => post.communityId === communityId && !post.moderationHiddenAt && !blocked.has(post.authorId))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const mine = members.find((member) => member.userId === req.user!.id);
   return res.json({ community: { ...community, members, posts, joined: Boolean(mine), myRole: mine?.role ?? null, memberCount: members.length } });
 });

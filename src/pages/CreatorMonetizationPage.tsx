@@ -13,7 +13,7 @@ type MonetizationDashboard = {
   metrics: { followers: number; qualifiedViews: number | null; watchTimeSeconds: number | null; publicPosts: number; engagements: number; engagementRate: number; accountAgeDays: number }
   requirements: Array<{ key: string; label: string; required: number | boolean; actual?: number | null; met: boolean; available?: boolean }>
   applications: CreatorApplication[]
-  earnings: { entries: LedgerEntry[]; estimatedBalanceCents: number; paidCents: number; pendingPayoutCents: number; payouts: Payout[] }
+  earnings: { entries: LedgerEntry[]; estimatedEarningsCents: number | null; confirmedEarningsCents: number; withdrawableBalanceCents: number; paidCents: number; pendingPayoutCents: number; payouts: Payout[] }
 }
 
 function money(amountCents: number, currency = 'USD') {
@@ -84,7 +84,7 @@ export function CreatorMonetizationPage() {
   const currency = dashboard.earnings.entries[0]?.currency ?? dashboard.earnings.payouts[0]?.currency ?? 'USD'
   return <div className="space-y-5 p-4 pb-24 sm:p-6">
     <header className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-      <p className="text-xs font-semibold uppercase tracking-widest text-violet-600">NOVAKOKO creators</p>
+      <p className="text-xs font-semibold uppercase tracking-widest text-violet-600">novachat creators</p>
       <h1 className="mt-2 text-2xl font-semibold text-slate-900">Monetization</h1>
       <p className="mt-1 text-sm text-slate-600">Duba cancanta, matsayin aikace-aikace, kudaden shiga da bukatun biyan kudi.</p>
     </header>
@@ -112,12 +112,18 @@ export function CreatorMonetizationPage() {
         {!dashboard.eligible ? <p className="text-xs text-slate-500">Dole ne a cika duk bukatun da aka auna kafin nema.</p> : null}
       </div> : null}
     </section>
-    <section className="grid gap-4 md:grid-cols-3">
+    <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
       {[
-        ['Ma’aunin da ake tsammani', dashboard.earnings.estimatedBalanceCents],
-        ['Biyan da ke jiran dubawa', dashboard.earnings.pendingPayoutCents],
+        ['Ƙiyasin kuɗin shiga', dashboard.earnings.estimatedEarningsCents],
+        ['Tabbataccen kuɗin shiga', dashboard.earnings.confirmedEarningsCents],
+        ['Biyan da ke jira', dashboard.earnings.pendingPayoutCents],
+        ['Kuɗin da za a iya cirewa', dashboard.earnings.withdrawableBalanceCents],
         ['An biya da gaske', dashboard.earnings.paidCents],
-      ].map(([label, amount]) => <div key={String(label)} className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200"><p className="text-sm text-slate-500">{label}</p><p className="mt-2 text-xl font-semibold text-slate-900">{money(Number(amount), currency)}</p></div>)}
+      ].map(([label, amount]) => <div key={String(label)} className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+        <p className="text-sm text-slate-500">{label}</p>
+        <p className="mt-2 text-xl font-semibold text-slate-900">{amount === null ? 'Ba a samu ba' : money(Number(amount), currency)}</p>
+        {amount === null ? <p className="mt-1 text-xs text-slate-500">Ba a samar da ƙiyasin kuɗin shiga ba tukuna.</p> : null}
+      </div>)}
     </section>
     {dashboard.active ? <section className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
       <h2 className="text-lg font-semibold">Neman biyan kudi</h2>

@@ -6,7 +6,7 @@ type SearchBarProps = {
   placeholder?: string
 }
 
-export function SearchBar({ value, onChange, placeholder = 'Search NOVAKOKO…' }: SearchBarProps) {
+export function SearchBar({ value, onChange, placeholder = 'Search novachat…' }: SearchBarProps) {
   return (
     <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-500 shadow-sm transition-colors focus-within:border-violet-400 focus-within:bg-white focus-within:ring-2 focus-within:ring-violet-100">
       <Search className="h-4 w-4" aria-hidden="true" />

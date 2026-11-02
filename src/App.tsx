@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { CommunitiesPage } from './pages/CommunitiesPage'
@@ -19,6 +19,7 @@ import { CompleteProfilePage } from './pages/CompleteProfilePage'
 import { CreatorMonetizationPage } from './pages/CreatorMonetizationPage'
 import { AdCampaignsPage } from './pages/AdCampaignsPage'
 import { CreatePage } from './pages/CreatePage'
+import { AccountAppealPage } from './pages/AccountAppealPage'
 import { UpdateChecker } from './components/UpdateChecker'
 
 const LivePage = lazy(() => import('./pages/LivePage').then(({ LivePage: page }) => ({ default: page })))
@@ -43,7 +44,8 @@ function PublicRoute() {
 }
 
 function ProtectedRoute() {
-  const { isAuthenticated, isLoading } = useAuth()
+  const { isAuthenticated, isLoading, user } = useAuth()
+  const location = useLocation()
 
   if (isLoading) {
     return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm font-medium text-slate-600">Loading...</div>
@@ -53,7 +55,15 @@ function ProtectedRoute() {
     return <Navigate to="/login" replace />
   }
 
-  return <Outlet />
+  const restricted = ['BANNED', 'SUSPENDED', 'DEACTIVATED'].includes(user?.status ?? '')
+  if (restricted && location.pathname !== '/appeal') {
+    return <Navigate to="/appeal" replace />
+  }
+  if (!restricted && location.pathname === '/appeal') {
+    return <Navigate to="/" replace />
+  }
+
+  return <Outlet key={user?.id ?? 'anonymous'} />
 }
 
 function AdminRoute() {
@@ -84,6 +94,7 @@ function AppRoutes() {
       </Route>
 
       <Route element={<ProtectedRoute />}>
+        <Route path="/appeal" element={<AccountAppealPage />} />
         <Route path="/complete-profile" element={<CompleteProfilePage />} />
         <Route path="/" element={<AppShell><HomePage /></AppShell>} />
         <Route path="/explore" element={<AppShell><ExplorePage /></AppShell>} />

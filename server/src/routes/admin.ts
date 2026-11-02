@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import type { Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import { prisma, isDatabaseAvailable } from '../lib/prisma.js';
 import { fallbackStore } from '../lib/fallbackStore.js';
@@ -90,8 +90,9 @@ async function loadReports() {
     return prisma.report.findMany({
       include: {
         reporter: { select: { id: true, name: true, email: true } },
-        post: { select: { id: true, content: true } },
-        comment: { select: { id: true, content: true } },
+        post: { select: { id: true, content: true, moderationHiddenAt: true, moderationHiddenById: true, moderationReason: true } },
+        comment: { select: { id: true, content: true, moderationHiddenAt: true, moderationHiddenById: true, moderationReason: true } },
+        message: { select: { id: true, text: true, senderId: true, moderationHiddenAt: true, moderationHiddenById: true, moderationReason: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -102,6 +103,7 @@ async function loadReports() {
     reporterId: report.reporterId,
     postId: report.targetType === 'post' ? report.targetId : null,
     commentId: report.targetType === 'comment' ? report.targetId : null,
+    messageId: report.targetType === 'message' ? report.targetId : null,
     category: report.category,
     details: report.reason,
     status: getReportStatusValue(report.status),
@@ -112,8 +114,24 @@ async function loadReports() {
       name: fallbackStore.findById(report.reporterId)!.name,
       email: fallbackStore.findById(report.reporterId)!.email,
     } : null,
-    post: report.targetType === 'post' ? { id: report.targetId, content: 'Post content' } : null,
-    comment: report.targetType === 'comment' ? { id: report.targetId, content: 'Comment content' } : null,
+    post: report.targetType === 'post'
+      ? (() => {
+          const post = socialStore.state.posts.find((entry) => entry.id === report.targetId);
+          return post ? { id: post.id, content: post.content, moderationHiddenAt: post.moderationHiddenAt ?? null, moderationHiddenById: post.moderationHiddenById ?? null, moderationReason: post.moderationReason ?? null } : null;
+        })()
+      : null,
+    comment: report.targetType === 'comment'
+      ? (() => {
+          const comment = socialStore.state.comments.find((entry) => entry.id === report.targetId);
+          return comment ? { id: comment.id, content: comment.content, moderationHiddenAt: comment.moderationHiddenAt ?? null, moderationHiddenById: comment.moderationHiddenById ?? null, moderationReason: comment.moderationReason ?? null } : null;
+        })()
+      : null,
+    message: report.targetType === 'message'
+      ? (() => {
+          const message = socialStore.state.messages.find((entry) => entry.id === report.targetId);
+          return message ? { id: message.id, text: message.text, senderId: message.senderId, moderationHiddenAt: message.moderationHiddenAt ?? null, moderationHiddenById: message.moderationHiddenById ?? null, moderationReason: message.moderationReason ?? null } : null;
+        })()
+      : null,
   }));
 }
 
@@ -166,6 +184,16 @@ async function loadPayments() {
 }
 
 async function loadAppeals() {
+  if (await isDatabaseAvailable()) {
+    return prisma.appeal.findMany({
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+        reviewer: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   return fallbackStore.listAppeals().map((appeal) => ({
     id: appeal.id,
     userId: appeal.userId,
@@ -528,50 +556,175 @@ adminRouter.get('/moderation/queue', requireModeratorAccess, async (_req, res) =
 
 adminRouter.post('/moderation/:id/remove', requireModeratorAccess, async (req, res) => {
   const id = String(req.params.id);
-  const report = (await loadReports()).find((entry: any) => entry.id === id);
-  if (!report) return res.status(404).json({ message: 'Moderation item not found.' });
+  const parsed = reportDecisionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ message: 'Moderation reason must be 1000 characters or fewer.' });
+  const reason = parsed.data.reason ?? parsed.data.note ?? 'Content removed by moderator.';
+
   if (await isDatabaseAvailable()) {
-    const updated = await prisma.report.update({
-      where: { id },
-      data: { status: 'RESOLVED', resolvedAt: new Date() },
+    const outcome = await prisma.$transaction(async (transaction) => {
+      const report = await transaction.report.findUnique({
+        where: { id },
+        select: { id: true, postId: true, commentId: true, messageId: true, status: true },
+      });
+      if (!report) return { type: 'not-found' as const };
+      if (!report.postId && !report.commentId && !report.messageId) return { type: 'unsupported' as const };
+      if (report.status === 'RESOLVED' || report.status === 'REJECTED') return { type: 'closed' as const };
+
+      const target = report.postId
+        ? await transaction.post.findUnique({ where: { id: report.postId }, select: { authorId: true } })
+        : report.commentId
+          ? await transaction.comment.findUnique({ where: { id: report.commentId }, select: { authorId: true } })
+          : await transaction.message.findUnique({ where: { id: report.messageId! }, select: { senderId: true } });
+      if (!target) return { type: 'target-not-found' as const };
+      const targetUserId = 'authorId' in target ? target.authorId : target.senderId;
+
+      const hiddenAt = new Date();
+      if (report.postId) {
+        await transaction.post.update({
+          where: { id: report.postId },
+          data: { moderationHiddenAt: hiddenAt, moderationHiddenById: req.user!.id, moderationReason: reason },
+        });
+      } else if (report.commentId) {
+        await transaction.comment.update({
+          where: { id: report.commentId! },
+          data: { moderationHiddenAt: hiddenAt, moderationHiddenById: req.user!.id, moderationReason: reason },
+        });
+      } else {
+        await transaction.message.update({
+          where: { id: report.messageId! },
+          data: { moderationHiddenAt: hiddenAt, moderationHiddenById: req.user!.id, moderationReason: reason },
+        });
+      }
+      const updated = await transaction.report.update({
+        where: { id },
+        data: { status: 'RESOLVED', resolvedAt: hiddenAt },
+      });
+      await transaction.adminAction.create({
+        data: {
+          actorId: req.user!.id,
+          targetUserId,
+          actionType: 'MODERATION_REMOVED',
+          details: JSON.stringify({
+            reportId: id,
+            targetType: report.postId ? 'post' : report.commentId ? 'comment' : 'message',
+            targetId: report.postId ?? report.commentId ?? report.messageId,
+            reason,
+          }),
+        },
+      });
+      return { type: 'ok' as const, item: updated };
     });
-    await trackAdminAction(req.user!.id, report.reporterId, 'MODERATION_REMOVED', req.body?.note ?? 'Content removed by moderator.');
-    return res.json({ item: updated, message: 'Moderation item removed and report resolved.' });
+    if (outcome.type === 'not-found') return res.status(404).json({ message: 'Moderation item not found.' });
+    if (outcome.type === 'unsupported') return res.status(400).json({ message: 'This report does not identify removable content.' });
+    if (outcome.type === 'target-not-found') return res.status(404).json({ message: 'Reported content not found.' });
+    if (outcome.type === 'closed') return res.status(409).json({ message: 'This report has already been resolved.' });
+    return res.json({ item: outcome.item, message: 'Content hidden and report resolved.' });
   }
+
   const target = socialStore.state.reports.find((entry) => entry.id === id);
+  if (!target) return res.status(404).json({ message: 'Moderation item not found.' });
+  if (!['post', 'comment', 'message'].includes(target.targetType)) return res.status(400).json({ message: 'This report does not identify removable content.' });
+  if (target.status === 'RESOLVED' || target.status === 'REJECTED') return res.status(409).json({ message: 'This report has already been resolved.' });
+  const content = target.targetType === 'post'
+    ? socialStore.state.posts.find((entry) => entry.id === target.targetId)
+    : target.targetType === 'comment'
+      ? socialStore.state.comments.find((entry) => entry.id === target.targetId)
+      : socialStore.state.messages.find((entry) => entry.id === target.targetId);
+  if (!content) return res.status(404).json({ message: 'Reported content not found.' });
+
   const resolvedAt = new Date().toISOString();
-  if (target) {
-    target.status = 'RESOLVED';
-    target.resolvedAt = resolvedAt;
-  }
-  report.status = 'RESOLVED';
-  report.resolvedAt = resolvedAt;
-  await trackAdminAction(req.user!.id, report.reporterId, 'MODERATION_REMOVED', req.body?.note ?? 'Content removed by moderator.');
-  return res.json({ item: report, message: 'Moderation item removed and report resolved.' });
+  Object.assign(content, { moderationHiddenAt: resolvedAt, moderationHiddenById: req.user!.id, moderationReason: reason });
+  target.status = 'RESOLVED';
+  target.resolvedAt = resolvedAt;
+  const item = await loadReports().then((reports) => reports.find((report: any) => report.id === id));
+  await trackAdminAction(
+    req.user!.id,
+    'authorId' in content ? content.authorId : content.senderId,
+    'MODERATION_REMOVED',
+    JSON.stringify({ reportId: id, targetType: target.targetType, targetId: target.targetId, reason }),
+  );
+  return res.json({ item, message: 'Content hidden and report resolved.' });
 });
 
 adminRouter.post('/moderation/:id/approve', requireModeratorAccess, async (req, res) => {
   const id = String(req.params.id);
-  const report = (await loadReports()).find((entry: any) => entry.id === id);
-  if (!report) return res.status(404).json({ message: 'Moderation item not found.' });
+  const parsed = reportDecisionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ message: 'Moderation note must be 1000 characters or fewer.' });
+  const note = parsed.data.note ?? parsed.data.reason ?? 'Content approved.';
   if (await isDatabaseAvailable()) {
-    const updated = await prisma.report.update({
-      where: { id },
-      data: { status: 'RESOLVED', resolvedAt: new Date() },
+    const outcome = await prisma.$transaction(async (transaction) => {
+      const report = await transaction.report.findUnique({
+        where: { id },
+        select: { id: true, postId: true, commentId: true, messageId: true },
+      });
+      if (!report) return null;
+      let targetUserId: string | null = null;
+      if (report.postId) {
+        const post = await transaction.post.findUnique({ where: { id: report.postId }, select: { authorId: true } });
+        targetUserId = post?.authorId ?? null;
+        await transaction.post.updateMany({
+          where: { id: report.postId },
+          data: { moderationHiddenAt: null, moderationHiddenById: null, moderationReason: null },
+        });
+      } else if (report.commentId) {
+        const comment = await transaction.comment.findUnique({ where: { id: report.commentId }, select: { authorId: true } });
+        targetUserId = comment?.authorId ?? null;
+        await transaction.comment.updateMany({
+          where: { id: report.commentId },
+          data: { moderationHiddenAt: null, moderationHiddenById: null, moderationReason: null },
+        });
+      } else if (report.messageId) {
+        const message = await transaction.message.findUnique({ where: { id: report.messageId }, select: { senderId: true } });
+        targetUserId = message?.senderId ?? null;
+        await transaction.message.updateMany({
+          where: { id: report.messageId },
+          data: { moderationHiddenAt: null, moderationHiddenById: null, moderationReason: null },
+        });
+      }
+      const updated = await transaction.report.update({
+        where: { id },
+        data: { status: 'RESOLVED', resolvedAt: new Date() },
+      });
+      await transaction.adminAction.create({
+        data: {
+          actorId: req.user!.id,
+          targetUserId,
+          actionType: 'MODERATION_APPROVED',
+          details: JSON.stringify({ reportId: id, note }),
+        },
+      });
+      return updated;
     });
-    await trackAdminAction(req.user!.id, report.reporterId, 'MODERATION_APPROVED', req.body?.note ?? 'Content approved.');
-    return res.json({ item: updated, message: 'Moderation item approved.' });
+    if (!outcome) return res.status(404).json({ message: 'Moderation item not found.' });
+    return res.json({ item: outcome, message: 'Content approved and visible.' });
   }
   const target = socialStore.state.reports.find((entry) => entry.id === id);
-  const resolvedAt = new Date().toISOString();
-  if (target) {
-    target.status = 'RESOLVED';
-    target.resolvedAt = resolvedAt;
+  if (!target) return res.status(404).json({ message: 'Moderation item not found.' });
+  let targetUserId: string | null = null;
+  if (target.targetType === 'post') {
+    const post = socialStore.state.posts.find((entry) => entry.id === target.targetId);
+    if (post) {
+      targetUserId = post.authorId;
+      Object.assign(post, { moderationHiddenAt: null, moderationHiddenById: null, moderationReason: null });
+    }
+  } else if (target.targetType === 'comment') {
+    const comment = socialStore.state.comments.find((entry) => entry.id === target.targetId);
+    if (comment) {
+      targetUserId = comment.authorId;
+      Object.assign(comment, { moderationHiddenAt: null, moderationHiddenById: null, moderationReason: null });
+    }
+  } else if (target.targetType === 'message') {
+    const message = socialStore.state.messages.find((entry) => entry.id === target.targetId);
+    if (message) {
+      targetUserId = message.senderId;
+      Object.assign(message, { moderationHiddenAt: null, moderationHiddenById: null, moderationReason: null });
+    }
   }
-  report.status = 'RESOLVED';
-  report.resolvedAt = resolvedAt;
-  await trackAdminAction(req.user!.id, report.reporterId, 'MODERATION_APPROVED', req.body?.note ?? 'Content approved.');
-  return res.json({ item: report, message: 'Moderation item approved.' });
+  target.status = 'RESOLVED';
+  target.resolvedAt = new Date().toISOString();
+  await trackAdminAction(req.user!.id, targetUserId, 'MODERATION_APPROVED', JSON.stringify({ reportId: id, note }));
+  const item = await loadReports().then((reports) => reports.find((report: any) => report.id === id));
+  return res.json({ item, message: 'Content approved and visible.' });
 });
 
 adminRouter.get('/appeals', requireAdminAccess, async (_req, res) => {
@@ -585,52 +738,81 @@ adminRouter.get('/appeals/:id', requireAdminAccess, async (req, res) => {
   return res.json({ appeal });
 });
 
-adminRouter.post('/appeals/:id/approve', async (req, res) => {
+async function reviewAppeal(req: Request, res: Response, decision: 'APPROVED' | 'REJECTED') {
+  const parsed = reportDecisionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ message: 'Appeal review note must be 1000 characters or fewer.' });
+  }
   const appeal = (await loadAppeals()).find((entry: any) => entry.id === req.params.id);
   if (!appeal) return res.status(404).json({ message: 'Appeal not found.' });
   if (appeal.userId === req.user!.id) {
-    return res.status(403).json({ message: 'You cannot approve your own appeal.' });
+    return res.status(403).json({ message: 'You cannot review your own appeal.' });
   }
   if (!['ADMIN', 'SUPER_ADMIN'].includes(req.user!.role)) {
-    return res.status(403).json({ message: 'Only administrators can approve appeals.' });
+    return res.status(403).json({ message: 'Only administrators can review appeals.' });
   }
 
-  const targetId = String(req.params.id);
+  if (appeal.status !== 'OPEN') {
+    return res.status(409).json({ message: 'This appeal has already been reviewed.' });
+  }
+
+  const note = parsed.data.note ?? parsed.data.reason ?? `${decision === 'APPROVED' ? 'Appeal approved' : 'Appeal rejected'}.`;
   if (await isDatabaseAvailable()) {
-    return res.status(200).json({ appeal: { id: targetId, status: 'APPROVED', reviewerId: req.user!.id }, message: 'Appeal approved.' });
+    const updated = await prisma.$transaction(async (transaction) => {
+      const result = await transaction.appeal.updateMany({
+        where: { id: appeal.id, status: 'OPEN' },
+        data: { status: decision, openAppealUserId: null, reviewerId: req.user!.id, reviewerNote: note, reviewedAt: new Date() },
+      });
+      if (!result.count) return null;
+      if (decision === 'APPROVED') {
+        await transaction.user.update({ where: { id: appeal.userId }, data: { status: 'ACTIVE' } });
+      }
+      await transaction.adminAction.create({
+        data: {
+          actorId: req.user!.id,
+          targetUserId: appeal.userId,
+          actionType: `APPEAL_${decision}`,
+          details: note,
+        },
+      });
+      return transaction.appeal.findUnique({
+        where: { id: appeal.id },
+        include: {
+          user: { select: { id: true, name: true, email: true } },
+          reviewer: { select: { id: true, name: true, email: true } },
+        },
+      });
+    });
+    if (!updated) return res.status(409).json({ message: 'This appeal has already been reviewed.' });
+    return res.json({ appeal: updated, message: `Appeal ${decision.toLowerCase()}.` });
   }
 
-  const item = fallbackStore.findAppeal(targetId);
-  if (item) {
-    item.status = 'APPROVED';
-    item.reviewerId = req.user!.id;
-    item.reviewerNote = req.body?.note ?? null;
-    item.reviewedAt = new Date().toISOString();
+  const item = fallbackStore.updateAppeal(appeal.id, {
+    status: decision,
+    reviewerId: req.user!.id,
+    reviewerNote: note,
+    reviewedAt: new Date().toISOString(),
+  });
+  if (!item) return res.status(404).json({ message: 'Appeal not found.' });
+  if (decision === 'APPROVED') {
+    fallbackStore.updateUser(appeal.userId, { status: 'ACTIVE' });
   }
-  await trackAdminAction(req.user!.id, appeal.userId, 'APPEAL_APPROVED', req.body?.note ?? 'Appeal approved.');
-  return res.json({ appeal: item, message: 'Appeal approved.' });
-});
+  await trackAdminAction(req.user!.id, appeal.userId, `APPEAL_${decision}`, note);
+  return res.json({ appeal: item, message: `Appeal ${decision.toLowerCase()}.` });
+}
 
-adminRouter.post('/appeals/:id/reject', async (req, res) => {
-  const appeal = (await loadAppeals()).find((entry: any) => entry.id === req.params.id);
-  if (!appeal) return res.status(404).json({ message: 'Appeal not found.' });
-  if (appeal.userId === req.user!.id) {
-    return res.status(403).json({ message: 'You cannot reject your own appeal.' });
-  }
-  if (!['ADMIN', 'SUPER_ADMIN'].includes(req.user!.role)) {
-    return res.status(403).json({ message: 'Only administrators can reject appeals.' });
-  }
+function appealReviewHandler(decision: 'APPROVED' | 'REJECTED') {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      await reviewAppeal(req, res, decision);
+    } catch (error) {
+      next(error);
+    }
+  };
+}
 
-  const updated = fallbackStore.findAppeal(req.params.id);
-  if (updated) {
-    updated.status = 'REJECTED';
-    updated.reviewerId = req.user!.id;
-    updated.reviewerNote = req.body?.note ?? null;
-    updated.reviewedAt = new Date().toISOString();
-  }
-  await trackAdminAction(req.user!.id, appeal.userId, 'APPEAL_REJECTED', req.body?.note ?? 'Appeal rejected.');
-  return res.json({ appeal: updated, message: 'Appeal rejected.' });
-});
+adminRouter.post('/appeals/:id/approve', requireAdminAccess, appealReviewHandler('APPROVED'));
+adminRouter.post('/appeals/:id/reject', requireAdminAccess, appealReviewHandler('REJECTED'));
 
 adminRouter.get('/subscriptions', requireAdminAccess, async (_req, res) => {
   const subscriptions = await loadSubscriptions();

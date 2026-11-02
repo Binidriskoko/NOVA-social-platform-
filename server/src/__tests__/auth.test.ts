@@ -109,7 +109,10 @@ describe('auth routes', () => {
     expect(registration.status).toBe(201);
     expect(registration.body.user.phoneE164).toBe('+2348031234567');
     const directory = await request(app).get('/api/users').set('Cookie', registration.headers['set-cookie']);
-    expect(directory.body.users.find((user: { id: string }) => user.id === registration.body.user.id).handle).toBe('phone_user');
+    const publicUser = directory.body.users.find((user: { id: string }) => user.id === registration.body.user.id);
+    expect(publicUser.handle).toBe('phone_user');
+    expect(publicUser).not.toHaveProperty('email');
+    expect((await request(app).get(`/api/users/${registration.body.user.id}`)).body.user).not.toHaveProperty('email');
 
     const usernameLogin = await request(app)
       .post('/api/auth/login')
@@ -249,5 +252,58 @@ describe('auth routes', () => {
     const logoutAll = await request(app).post('/api/auth/logout-all').set('Cookie', cookie);
     expect(logoutAll.status).toBe(200);
     expect((await request(app).get('/api/auth/me').set('Cookie', cookie)).status).toBe(401);
+  });
+
+  it('lets restricted users submit one appeal and only exposes their own appeal history', async () => {
+    const registration = await request(app).post('/api/auth/register').send({
+      name: 'Restricted User',
+      email: 'restricted-appeal@example.com',
+      password: 'Password123',
+      communityRulesAccepted: true,
+    });
+    const userId = registration.body.user.id as string;
+    fallbackStore.updateUser(userId, { status: 'SUSPENDED' });
+    const other = await request(app).post('/api/auth/register').send({
+      name: 'Other Restricted User',
+      email: 'other-appeal@example.com',
+      password: 'Password123',
+      communityRulesAccepted: true,
+    });
+    fallbackStore.updateUser(other.body.user.id, { status: 'BANNED' });
+
+    const cookie = registration.headers['set-cookie'];
+    const submitted = await request(app).post('/api/auth/appeals').set('Cookie', cookie).send({
+      reason: 'I believe this account restriction was applied in error.',
+      originalAction: 'USER_BANNED',
+      userId: other.body.user.id,
+    });
+    expect(submitted.status).toBe(201);
+    expect(submitted.body.persistence).toBe('in-memory');
+    expect(submitted.body.appeal.userId).toBe(userId);
+    expect(submitted.body.appeal.originalAction).toBe('USER_SUSPENDED');
+    expect(submitted.body.appeal.status).toBe('OPEN');
+
+    const duplicate = await request(app).post('/api/auth/appeals').set('Cookie', cookie).send({
+      reason: 'I want to submit another request about the same restriction.',
+    });
+    expect(duplicate.status).toBe(409);
+
+    const ownHistory = await request(app).get('/api/auth/appeals/me').set('Cookie', cookie);
+    expect(ownHistory.body.persistence).toBe('in-memory');
+    expect(ownHistory.body.appeals).toHaveLength(1);
+    expect(ownHistory.body.appeals[0].userId).toBe(userId);
+    const otherHistory = await request(app).get('/api/auth/appeals/me').set('Cookie', other.headers['set-cookie']);
+    expect(otherHistory.body.appeals).toHaveLength(0);
+
+    const activeAccount = await request(app).post('/api/auth/register').send({
+      name: 'Active Account',
+      email: 'active-appeal@example.com',
+      password: 'Password123',
+      communityRulesAccepted: true,
+    });
+    const active = await request(app).post('/api/auth/appeals').set('Cookie', activeAccount.headers['set-cookie']).send({
+      reason: 'This active account should not be allowed to submit an appeal.',
+    });
+    expect(active.status).toBe(403);
   });
 });

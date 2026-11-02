@@ -70,7 +70,7 @@ export function ProfilePage() {
 
   useEffect(() => { void loadProfile() }, [profileId])
 
-  const displayName = profile?.profile?.displayName ?? profile?.name ?? 'NOVAKOKO user'
+  const displayName = profile?.profile?.displayName ?? profile?.name ?? 'novachat user'
   const avatar = profile?.profile?.avatarUrl ?? ''
   const relationship = profile?.relationship
 

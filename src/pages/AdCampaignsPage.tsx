@@ -98,7 +98,7 @@ export function AdCampaignsPage() {
 
   return <div className="space-y-5 p-4 pb-24 sm:p-6">
     <header className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-      <p className="text-xs font-semibold uppercase tracking-widest text-violet-600">NOVAKOKO Ads</p>
+      <p className="text-xs font-semibold uppercase tracking-widest text-violet-600">novachat Ads</p>
       <h1 className="mt-2 text-2xl font-semibold text-slate-900">Campaigns</h1>
       <p className="mt-1 text-sm text-slate-600">Create a campaign for a public placement and submit it for administrator review.</p>
     </header>

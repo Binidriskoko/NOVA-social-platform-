@@ -516,13 +516,13 @@ export function CallsPage() {
     }
   }
 
-  const nameFor = (userId: string) => userId === user?.id ? 'You' : users.find((person) => person.id === userId)?.name ?? 'NOVAKOKO member'
+  const nameFor = (userId: string) => userId === user?.id ? 'You' : users.find((person) => person.id === userId)?.name ?? 'novachat member'
   const callTitle = (call: CallSession) => {
     if (call.conversationId) {
       const conversation = conversations.find((entry) => entry.id === call.conversationId)
       if (conversation?.name) return conversation.name
     }
-    return call.participants.filter((participant) => participant.userId !== user?.id).map((participant) => nameFor(participant.userId)).join(', ') || 'NOVAKOKO call'
+    return call.participants.filter((participant) => participant.userId !== user?.id).map((participant) => nameFor(participant.userId)).join(', ') || 'novachat call'
   }
   const callAvatar = (call: CallSession) => {
     if (call.conversationId) {
@@ -560,7 +560,7 @@ export function CallsPage() {
       {activeCall && screenState ? <section aria-label={`${activeCall.type} call`} role="dialog" aria-modal="true" className={callViewportClassName}>
         <header className="flex items-center justify-between gap-3">
           <Link to="/messages" className="inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm text-white/80 hover:bg-white/10"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Messages</Link>
-          <p className="text-xs font-semibold uppercase tracking-wide text-indigo-200">{activeCall.type === 'video' ? 'NOVAKOKO video call' : 'NOVAKOKO voice call'}</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-indigo-200">{activeCall.type === 'video' ? 'novachat video call' : 'novachat voice call'}</p>
         </header>
         <div className="mx-auto flex w-full min-w-0 max-w-4xl flex-1 flex-col items-center justify-center py-6">
           <Avatar src={callAvatar(activeCall)} alt={callTitle(activeCall)} size="xl" />

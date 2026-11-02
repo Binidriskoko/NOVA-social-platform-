@@ -1,5 +1,15 @@
-const CACHE_NAME = 'novakoko-shell-v1'
-const SHELL_URLS = ['/', '/index.html', '/manifest.webmanifest', '/pwa-icon.svg']
+const CACHE_NAME = 'novachat-shell-v2'
+const SHELL_URLS = [
+  '/',
+  '/index.html',
+  '/manifest.webmanifest',
+  '/favicon.ico',
+  '/favicon-32.png',
+  '/apple-touch-icon.png',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
+  '/icons/icon-512-maskable.png',
+]
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_URLS)))

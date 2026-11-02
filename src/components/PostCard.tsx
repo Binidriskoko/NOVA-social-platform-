@@ -361,7 +361,7 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
           </header>
           {shareMode === 'choose' ? <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <button type="button" onClick={() => void loadShareConversations()} disabled={shareBusy} className="rounded-2xl border border-indigo-200 bg-indigo-50 p-4 text-left hover:bg-indigo-100 disabled:opacity-50">
-              <span className="block font-semibold text-indigo-900">Share inside NOVAKOKO</span><span className="mt-1 block text-sm text-indigo-800">Send the post link to a friend or conversation.</span>
+              <span className="block font-semibold text-indigo-900">Share inside novachat</span><span className="mt-1 block text-sm text-indigo-800">Send the post link to a friend or conversation.</span>
             </button>
             <button type="button" onClick={() => void shareFromDevice()} disabled={shareBusy} className="rounded-2xl border border-slate-200 p-4 text-left hover:bg-slate-50 disabled:opacity-50">
               <span className="block font-semibold text-slate-900">{shareBusy ? 'Sharing…' : 'Share externally'}</span><span className="mt-1 block text-sm text-slate-600">Use your device share sheet or copy the post link.</span>
@@ -377,7 +377,7 @@ export function PostCard({ post, onDeleted }: PostCardProps) {
             <span className="min-w-0 flex-1 truncate text-sm text-slate-800">{conversation.name ?? peer ?? 'Group conversation'}</span>
             <Button variant="primary" size="sm" onClick={() => void shareToConversation(conversation.id)} disabled={shareBusy}>{shareBusy ? 'Sending…' : 'Send'}</Button>
           </li>
-        })}</ul> : <p className="mt-3 text-sm text-slate-500">Start a conversation to share this post with NOVAKOKO messaging.</p>}
+        })}</ul> : <p className="mt-3 text-sm text-slate-500">Start a conversation to share this post with novachat messaging.</p>}
           </>}
           {error ? <p className="mt-3 text-sm text-rose-700" role="alert">{error}</p> : null}
         </section>

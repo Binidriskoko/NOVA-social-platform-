@@ -74,8 +74,8 @@ export function AppShell({ children }: AppShellProps) {
     }
   }
 
-  const userName = user?.name ?? 'NOVAKOKO User'
-  const userHandle = user?.username ? `@${user.username}` : user?.email ?? 'NOVAKOKO member'
+  const userName = user?.name ?? 'novachat User'
+  const userHandle = user?.username ? `@${user.username}` : user?.email ?? 'novachat member'
   const userAvatar = ''
 
   return (
@@ -87,7 +87,7 @@ export function AppShell({ children }: AppShellProps) {
               N
             </div>
             <div>
-              <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-200">NOVAKOKO</p>
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-200">novachat</p>
               <p className="text-xs text-blue-100/65">Your world, closer</p>
             </div>
           </div>
@@ -200,8 +200,8 @@ function TopBar({ currentPath }: TopBarProps) {
   return (
     <header className="sticky top-0 z-20 flex items-center justify-between border-b border-blue-100 bg-white/95 px-4 py-3 backdrop-blur sm:px-6">
       <div>
-        <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-blue-700">NOVAKOKO</p>
-        <h1 className="text-xl font-semibold text-slate-900">{labels[currentPath] ?? (currentPath.startsWith('/profile/') ? 'Profile' : 'NOVAKOKO')}</h1>
+        <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-blue-700">novachat</p>
+        <h1 className="text-xl font-semibold text-slate-900">{labels[currentPath] ?? (currentPath.startsWith('/profile/') ? 'Profile' : 'novachat')}</h1>
       </div>
       <div className="flex items-center gap-2">
         <Link to="/explore" className="hidden rounded-xl border border-blue-100 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-blue-50 sm:inline-flex">Find people</Link>
@@ -278,7 +278,7 @@ function MobileNavigation() {
           <div className="absolute inset-x-3 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] mx-auto max-w-lg rounded-3xl border border-slate-200 bg-white p-4 shadow-2xl">
             <div className="mb-3 flex items-center justify-between px-2">
               <div>
-                <p className="text-xs font-bold uppercase tracking-[0.2em] text-blue-700">NOVAKOKO</p>
+                <p className="text-xs font-bold uppercase tracking-[0.2em] text-blue-700">novachat</p>
                 <p className="text-sm font-semibold text-slate-900">More to explore</p>
               </div>
               <button type="button" onClick={() => setMenuOpen(false)} aria-label="Close navigation" className="rounded-lg px-3 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100">Close</button>

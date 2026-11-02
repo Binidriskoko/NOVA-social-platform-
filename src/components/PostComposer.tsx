@@ -125,7 +125,7 @@ export function PostComposer({ onClose, onPublished, inline = false }: PostCompo
       <form onSubmit={(event) => void publishPost(event)} className={inline ? 'w-full rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6' : 'flex h-[100dvh] w-full max-w-3xl flex-col overflow-hidden bg-white shadow-xl sm:h-auto sm:min-h-[min(760px,calc(100dvh-2rem))] sm:rounded-3xl'}>
         <div className={`flex items-center justify-between gap-4 ${inline ? '' : 'border-b border-slate-200 px-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-3 sm:px-6'}`}>
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.24em] text-indigo-600">NOVAKOKO · Create</p>
+            <p className="text-xs font-bold uppercase tracking-[0.24em] text-indigo-600">novachat · Create</p>
             <h2 id="post-composer-title" className="mt-1 text-xl font-semibold text-slate-900">Create post</h2>
           </div>
           <button type="button" onClick={onClose} disabled={submitting} aria-label="Close post composer" className="rounded-full p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-50">
@@ -216,7 +216,7 @@ export function PostComposer({ onClose, onPublished, inline = false }: PostCompo
 
         <div className="mt-4 flex items-start gap-2 rounded-xl bg-amber-50 p-3 text-xs text-amber-900">
           <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          <p>Posts are checked under NOVAKOKO community safety rules before publication.</p>
+          <p>Posts are checked under novachat community safety rules before publication.</p>
         </div>
         {profileError ? <p className="mt-3 text-xs text-slate-500" role="status">{profileError}</p> : null}
         {error ? <p className="mt-3 text-sm text-rose-700" role="alert">{error}</p> : null}

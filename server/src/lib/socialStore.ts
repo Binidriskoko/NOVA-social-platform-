@@ -24,6 +24,9 @@ export type SocialPostRecord = {
   content: string;
   imageUrl: string | null;
   visibility: 'PUBLIC' | 'FOLLOWERS' | 'PRIVATE';
+  moderationHiddenAt?: string | null;
+  moderationHiddenById?: string | null;
+  moderationReason?: string | null;
   communityId?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -85,6 +88,9 @@ export type SocialCommentRecord = {
   authorId: string;
   parentId?: string | null;
   content: string;
+  moderationHiddenAt?: string | null;
+  moderationHiddenById?: string | null;
+  moderationReason?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -119,11 +125,12 @@ export type SocialNotificationRecord = {
 export type SocialReportRecord = {
   id: string;
   reporterId: string;
-  targetType: 'post' | 'comment' | 'user';
+  targetType: 'post' | 'comment' | 'message' | 'user';
   targetId: string;
   category: 'SPAM' | 'HARASSMENT' | 'SEXUAL_CONTENT' | 'HATE' | 'VIOLENCE' | 'SCAM' | 'OTHER';
   reason: string;
   details?: string | null;
+  messageId?: string | null;
   status?: 'OPEN' | 'REVIEWING' | 'RESOLVED' | 'REJECTED';
   resolvedAt?: string | null;
   createdAt: string;
@@ -182,6 +189,9 @@ export type MessageRecord = {
   forwardedFromId?: string | null;
   editedAt?: string | null;
   expiresAt?: string | null;
+  moderationHiddenAt?: string | null;
+  moderationHiddenById?: string | null;
+  moderationReason?: string | null;
 };
 
 export type MessageReactionRecord = {

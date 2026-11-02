@@ -167,6 +167,13 @@ export const fallbackStore = {
     assertFallbackStorageAllowed();
     return globalStore.__novaFallbackAppeals!.find((appeal) => appeal.id === id) ?? null;
   },
+  updateAppeal(id: string, updates: Partial<Pick<FallbackAppeal, 'status' | 'reviewerId' | 'reviewerNote' | 'reviewedAt'>>) {
+    assertFallbackStorageAllowed();
+    const appeal = globalStore.__novaFallbackAppeals!.find((entry) => entry.id === id);
+    if (!appeal) return null;
+    Object.assign(appeal, updates);
+    return { ...appeal };
+  },
   createSession(session: Omit<FallbackSession, 'id' | 'createdAt' | 'revokedAt'> & { id?: string; createdAt?: string }) {
     assertFallbackStorageAllowed();
     const record: FallbackSession = {

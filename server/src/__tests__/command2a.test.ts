@@ -56,7 +56,7 @@ describe('command 2a foundation', () => {
       password: 'Password123',
     });
 
-    const bobUser = (await request(app).get('/api/users')).body.users.find((user: { email: string }) => user.email === 'bob@example.com');
+    const bobUser = (await request(app).get('/api/users')).body.users.find((user: { name: string }) => user.name === 'Bob');
     const postResponse = await request(app)
       .post('/api/posts')
       .set('Cookie', getCookieHeader(aliceLogin))
@@ -163,7 +163,7 @@ describe('command 2a foundation', () => {
       email: 'alice@example.com',
       password: 'Password123',
     });
-    const bobUser = (await request(app).get('/api/users')).body.users.find((user: { email: string }) => user.email === 'bob@example.com');
+    const bobUser = (await request(app).get('/api/users')).body.users.find((user: { name: string }) => user.name === 'Bob');
 
     const convo = await request(app)
       .post('/api/conversations')
@@ -212,7 +212,7 @@ describe('command 2a foundation', () => {
       email: 'alice@example.com',
       password: 'Password123',
     });
-    const bobUser = (await request(app).get('/api/users')).body.users.find((user: { email: string }) => user.email === 'bob@example.com');
+    const bobUser = (await request(app).get('/api/users')).body.users.find((user: { name: string }) => user.name === 'Bob');
 
     const started = await request(app)
       .post('/api/calls/start')

@@ -23,6 +23,30 @@ describe('messaging database responses', () => {
     vi.restoreAllMocks();
   });
 
+  it('excludes moderator-hidden content from database-backed message search', async () => {
+    const userId = 'database-user';
+    const token = signAccessToken({ sub: userId, email: 'user@example.com', role: 'USER' });
+
+    vi.spyOn(prisma.session, 'findFirst').mockResolvedValue({ id: 'database-session' } as never);
+    vi.spyOn(prisma.user, 'findUnique').mockResolvedValue({
+      id: userId,
+      email: 'user@example.com',
+      name: 'Database User',
+      role: 'USER',
+      status: 'ACTIVE',
+    } as never);
+    const findMessages = vi.spyOn(prisma.message, 'findMany').mockResolvedValue([] as never);
+
+    const response = await request(app)
+      .get('/api/messages/search?q=hello')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    expect(findMessages).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ deletedAt: null, moderationHiddenAt: null }),
+    }));
+  });
+
   it('defaults missing and null reactions without accessing in-memory storage', async () => {
     const userId = 'database-user';
     const token = signAccessToken({ sub: userId, email: 'user@example.com', role: 'USER' });

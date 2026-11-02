@@ -52,7 +52,7 @@ export function AiPage() {
   return (
     <div className="mx-auto max-w-5xl space-y-7 p-4 sm:p-7">
       <header>
-        <p className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.22em] text-indigo-600"><Sparkles className="h-3.5 w-3.5" /> NOVAKOKO AI</p>
+        <p className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.22em] text-indigo-600"><Sparkles className="h-3.5 w-3.5" /> novachat AI</p>
         <h2 className="mt-1 text-2xl font-bold text-slate-950 sm:text-3xl">A thoughtful place to start.</h2>
         <p className="mt-1 text-sm text-slate-500">Shape a note, find an idea, or get unstuck.</p>
       </header>

@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { Readable } from 'node:stream';
 import multer from 'multer';
 import sharp from 'sharp';
 import env from '../config/env.js';
@@ -9,6 +10,7 @@ import { requireActiveAccountIfAuthenticated, requireAuth } from '../middleware/
 
 const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
+const VIDEO_READ_CHUNK_BYTES = 256 * 1024;
 const attachmentTypes = new Map([
   ['audio/webm', 'webm'],
   ['audio/ogg', 'ogg'],
@@ -22,6 +24,40 @@ const attachmentTypes = new Map([
 ]);
 
 export const mediaRouter = Router();
+
+function parseByteRange(value: string, size: number) {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value);
+  if (!match || (!match[1] && !match[2]) || size === 0) return null;
+  const fileSize = BigInt(size);
+
+  if (!match[1]) {
+    const suffixLength = BigInt(match[2]);
+    if (suffixLength <= 0n) return null;
+    return { start: suffixLength >= fileSize ? 0 : size - Number(suffixLength), end: size - 1 };
+  }
+
+  const start = BigInt(match[1]);
+  const requestedEnd = match[2] ? BigInt(match[2]) : fileSize - 1n;
+  if (start >= fileSize || start > requestedEnd) {
+    return null;
+  }
+  return {
+    start: Number(start),
+    end: Number(requestedEnd >= fileSize ? fileSize - 1n : requestedEnd),
+  };
+}
+
+async function* readVideoChunks(storage: ReturnType<typeof getMediaStorage>, key: string, start: number, end: number) {
+  for (let offset = start; offset <= end;) {
+    const length = Math.min(VIDEO_READ_CHUNK_BYTES, end - offset + 1);
+    const bytes = await storage.getRange(key, offset, length);
+    if (!bytes || bytes.length !== length) {
+      throw new Error(`Video media ${key} could not be read completely.`);
+    }
+    yield bytes;
+    offset += length;
+  }
+}
 
 function uploadMediaFile(req: Request, res: Response, next: NextFunction) {
   multer({
@@ -113,6 +149,7 @@ async function canReadAttachment(key: string, ownerUserId: string, viewerId: str
     const referencedByMessage = socialStore.state.messages.some((message) =>
       message.mediaUrl === mediaUrl
       && !message.deletedAt
+      && !message.moderationHiddenAt
       && (!message.expiresAt || new Date(message.expiresAt).getTime() > Date.now())
       && socialStore.state.conversationParticipants.some((participant) =>
         participant.conversationId === message.conversationId
@@ -131,6 +168,7 @@ async function canReadAttachment(key: string, ownerUserId: string, viewerId: str
     return socialStore.state.posts.some((post) =>
       post.authorId === ownerUserId
       && post.imageUrl === mediaUrl
+      && !post.moderationHiddenAt
       && (post.visibility === 'PUBLIC' || (post.visibility === 'FOLLOWERS' && followsOwner)),
     );
   }
@@ -138,6 +176,7 @@ async function canReadAttachment(key: string, ownerUserId: string, viewerId: str
     where: {
       mediaUrl,
       deletedAt: null,
+      moderationHiddenAt: null,
       OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
       conversation: { participants: { some: { userId: viewerId, leftAt: null } } },
     },
@@ -155,7 +194,7 @@ async function canReadAttachment(key: string, ownerUserId: string, viewerId: str
       select: { id: true },
     }),
     prisma.post.findFirst({
-      where: { authorId: ownerUserId, imageUrl: mediaUrl, visibility: { in: ['PUBLIC', 'FOLLOWERS'] } },
+      where: { authorId: ownerUserId, imageUrl: mediaUrl, moderationHiddenAt: null, visibility: { in: ['PUBLIC', 'FOLLOWERS'] } },
       select: { visibility: true },
     }),
   ]);
@@ -178,6 +217,7 @@ async function canReadUploadedMedia(key: string, ownerUserId: string, viewerId: 
     const referencedByPost = socialStore.state.posts.some((post) =>
       post.authorId === ownerUserId
       && post.imageUrl === mediaUrl
+      && !post.moderationHiddenAt
       && (post.visibility === 'PUBLIC' || (post.visibility === 'FOLLOWERS' && followsOwner)),
     );
     const referencedByStory = socialStore.state.stories.some((story) =>
@@ -231,7 +271,7 @@ async function canReadUploadedMedia(key: string, ownerUserId: string, viewerId: 
       select: { id: true },
     }),
     prisma.post.findMany({
-      where: { authorId: ownerUserId, imageUrl: mediaUrl },
+      where: { authorId: ownerUserId, imageUrl: mediaUrl, moderationHiddenAt: null },
       select: { visibility: true },
     }),
     prisma.story.findFirst({
@@ -333,15 +373,54 @@ mediaRouter.get('/files/:key', requireAuth, async (req, res, next) => {
   try {
     const key = String(req.params.key);
     if (!/^[0-9a-f-]{36}\.(?:webm|mp4|ogg|mp3|m4a|pdf|docx)$/.test(key)) return res.status(404).end();
-    const object = await getMediaStorage(env.NODE_ENV).get(key);
-    if (!object || !object.ownerUserId || !(await canReadAttachment(key, object.ownerUserId, req.user!.id))) {
+    const storage = getMediaStorage(env.NODE_ENV);
+    const metadata = await storage.getMetadata(key);
+    if (!metadata || !metadata.ownerUserId || !(await canReadAttachment(key, metadata.ownerUserId, req.user!.id))) {
       return res.status(404).end();
     }
-    res.setHeader('Content-Type', object.contentType);
+    const isVideo = metadata.contentType.startsWith('video/');
+    const object = isVideo || req.method === 'HEAD' ? null : await storage.get(key);
+    if (!isVideo && req.method !== 'HEAD' && !object) return res.status(404).end();
+
+    res.setHeader('Content-Type', metadata.contentType);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('Vary', 'Cookie, Authorization');
-    return res.send(object.bytes);
+    res.setHeader('Accept-Ranges', 'bytes');
+    const rangeHeader = req.headers.range;
+    const range = rangeHeader ? parseByteRange(rangeHeader, metadata.size) : null;
+    if (rangeHeader) {
+      if (!range) return res.status(416).setHeader('Content-Range', `bytes */${metadata.size}`).end();
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${metadata.size}`);
+      res.setHeader('Content-Length', range.end - range.start + 1);
+    } else {
+      res.setHeader('Content-Length', metadata.size);
+    }
+    if (req.method === 'HEAD') return res.end();
+
+    if (isVideo) {
+      const start = range?.start ?? 0;
+      const end = range?.end ?? metadata.size - 1;
+      const videoStream = Readable.from(readVideoChunks(storage, key, start, end));
+      let clientDisconnected = false;
+      res.once('close', () => {
+        if (!res.writableFinished) {
+          clientDisconnected = true;
+          videoStream.destroy();
+        }
+      });
+      videoStream.once('error', (error) => {
+        if (!clientDisconnected && !req.aborted) next(error);
+      });
+      videoStream.pipe(res);
+      return;
+    }
+
+    const bytes = object?.bytes;
+    if (!bytes) return res.status(404).end();
+    if (range) return res.send(bytes.subarray(range.start, range.end + 1));
+    return res.send(bytes);
   } catch (error) {
     if (error instanceof MediaStorageUnavailableError) return res.status(503).json({ message: 'Persistent attachment storage is not configured.' });
     return next(error);

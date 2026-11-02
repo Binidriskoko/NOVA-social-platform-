@@ -90,7 +90,7 @@ async function getMeasurementReadiness() {
   const settings = await getSettings();
   if (await isDatabaseAvailable()) {
     const cutoff = new Date(Date.now() - settings.qualifiedViewWindowDays * 24 * 60 * 60 * 1000);
-    const yes = await prisma.videoMeasurement.findFirst({ where: { qualified: true, endedAt: { gte: cutoff } }, select: { id: true } });
+    const yes = await prisma.videoMeasurement.findFirst({ where: { qualified: true, endedAt: { gte: cutoff }, post: { moderationHiddenAt: null } }, select: { id: true } });
     return Boolean(yes);
   }
   return false;
@@ -106,7 +106,7 @@ async function loadCreatorAnalytics() {
   if (await isDatabaseAvailable()) {
     const [rows, candidates, pending] = await Promise.all([
       prisma.videoMeasurement.findMany({
-        where: { createdAt: { gte: cutoff } },
+        where: { createdAt: { gte: cutoff }, post: { moderationHiddenAt: null } },
         select: {
           watchSeconds: true,
           qualified: true,
@@ -143,7 +143,7 @@ async function loadCreatorAnalytics() {
       .filter((measurement) => new Date(measurement.createdAt).getTime() >= cutoff.getTime())
       .flatMap((measurement) => {
         const post = socialStore.state.posts.find((candidate) => candidate.id === measurement.postId);
-        return post ? [{ ...measurement, authorId: post.authorId }] : [];
+        return post && !post.moderationHiddenAt ? [{ ...measurement, authorId: post.authorId }] : [];
       });
     for (const application of commerceStore.state.creatorApplications) {
       const creatorId = String(application.creatorId);
@@ -208,7 +208,7 @@ async function getCreatorMeasurementMetrics(userId: string, settings: Awaited<Re
       where: {
         qualified: true,
         endedAt: { gte: cutoff },
-        post: { authorId: userId },
+        post: { authorId: userId, moderationHiddenAt: null },
       },
       select: { watchSeconds: true },
     });
@@ -218,7 +218,7 @@ async function getCreatorMeasurementMetrics(userId: string, settings: Awaited<Re
   }
   const records = socialStore.state.videoMeasurements.filter((entry) => {
     const endedAt = new Date(entry.endedAt).getTime();
-    return entry.qualified && endedAt >= cutoff.getTime() && socialStore.state.posts.some((post) => post.id === entry.postId && post.authorId === userId);
+    return entry.qualified && endedAt >= cutoff.getTime() && socialStore.state.posts.some((post) => post.id === entry.postId && post.authorId === userId && !post.moderationHiddenAt);
   });
   const qualifiedViews = records.length;
   const watchTimeSeconds = records.reduce((sum, record) => sum + record.watchSeconds, 0);
@@ -242,12 +242,12 @@ async function getEligibility(userId: string) {
     active = Boolean(approved && user.creatorProfile?.isEnabled);
     [followers, publicPosts] = await Promise.all([
       prisma.follow.count({ where: { followingId: userId } }),
-      prisma.post.count({ where: { authorId: userId, visibility: 'PUBLIC' } }),
+      prisma.post.count({ where: { authorId: userId, visibility: 'PUBLIC', moderationHiddenAt: null } }),
     ]);
-    const publicPostFilter = { post: { authorId: userId, visibility: 'PUBLIC' as const } };
+    const publicPostFilter = { post: { authorId: userId, visibility: 'PUBLIC' as const, moderationHiddenAt: null } };
     const [reactions, comments, shares] = await Promise.all([
       prisma.reaction.count({ where: publicPostFilter }),
-      prisma.comment.count({ where: publicPostFilter }),
+      prisma.comment.count({ where: { ...publicPostFilter, moderationHiddenAt: null } }),
       prisma.postShare.count({ where: publicPostFilter }),
     ]);
     engagements = reactions + comments + shares;
@@ -258,11 +258,11 @@ async function getEligibility(userId: string) {
     approved = commerceStore.state.creatorApplications.some((application) => application.creatorId === userId && application.status === 'APPROVED');
     active = Boolean(approved && commerceStore.state.creators.some((profile) => profile.userId === userId && profile.isEnabled));
     followers = socialStore.state.follows.filter((follow) => follow.followingId === userId).length;
-    const posts = socialStore.state.posts.filter((post) => post.authorId === userId && post.visibility === 'PUBLIC');
+    const posts = socialStore.state.posts.filter((post) => post.authorId === userId && post.visibility === 'PUBLIC' && !post.moderationHiddenAt);
     publicPosts = posts.length;
     const postIds = new Set(posts.map((post) => post.id));
     engagements = socialStore.state.reactions.filter((reaction) => postIds.has(reaction.postId)).length
-      + socialStore.state.comments.filter((comment) => postIds.has(comment.postId)).length
+      + socialStore.state.comments.filter((comment) => postIds.has(comment.postId) && !comment.moderationHiddenAt).length
       + socialStore.state.postShares.filter((share) => postIds.has(share.postId)).length;
   }
   const ageDays = Math.max(0, Math.floor((Date.now() - accountCreatedAt.getTime()) / 86_400_000));
@@ -295,10 +295,15 @@ async function findPostForMeasurement(postId: string, viewerId: string) {
   if (dbAvailable) {
     const post = await prisma.post.findUnique({
       where: { id: postId },
-      select: { id: true, authorId: true, visibility: true },
+      select: { id: true, authorId: true, visibility: true, moderationHiddenAt: true },
     });
-    if (!post) return null;
+    if (!post || post.moderationHiddenAt) return null;
     if (post.authorId === viewerId) return post;
+    const blocked = await prisma.block.findFirst({
+      where: { OR: [{ blockerId: viewerId, blockedId: post.authorId }, { blockerId: post.authorId, blockedId: viewerId }] },
+      select: { id: true },
+    });
+    if (blocked) return null;
     if (post.visibility === 'PUBLIC') return post;
     if (post.visibility === 'FOLLOWERS') {
       const follow = await prisma.follow.findUnique({ where: { followerId_followingId: { followerId: viewerId, followingId: post.authorId } }, select: { id: true } });
@@ -308,8 +313,12 @@ async function findPostForMeasurement(postId: string, viewerId: string) {
     return null;
   }
   const post = socialStore.state.posts.find((entry) => entry.id === postId);
-  if (!post) return null;
+  if (!post || post.moderationHiddenAt) return null;
   if (post.authorId === viewerId) return post;
+  if (socialStore.state.blocks.some((block) =>
+    (block.blockerId === viewerId && block.blockedId === post.authorId)
+    || (block.blockerId === post.authorId && block.blockedId === viewerId),
+  )) return null;
   if (post.visibility === 'PUBLIC') return post;
   if (post.visibility === 'FOLLOWERS') {
     const isFollowing = socialStore.state.follows.some((follow) => follow.followerId === viewerId && follow.followingId === post.authorId);
@@ -333,12 +342,18 @@ router.get('/creators/me/monetization', requireAuth, async (req, res) => {
   const payouts = await isDatabaseAvailable()
     ? await prisma.creatorPayoutRequest.findMany({ where: { creatorId: req.user!.id }, orderBy: { requestedAt: 'desc' } })
     : commerceStore.state.creatorPayouts.filter((payout) => payout.creatorId === req.user!.id);
+  const confirmedEarningsCents = entries
+    .filter((entry) => ['SUBSCRIPTION', 'SUBSCRIPTION_REFUND'].includes(entry.type))
+    .reduce((sum, entry) => sum + Number(entry.amountCents), 0);
+  const withdrawableBalanceCents = entries.reduce((sum, entry) => sum + Number(entry.amountCents), 0);
   return res.json({
     ...eligibility,
     applications,
     earnings: {
       entries,
-      estimatedBalanceCents: entries.reduce((sum, entry) => sum + Number(entry.amountCents), 0),
+      estimatedEarningsCents: null,
+      confirmedEarningsCents,
+      withdrawableBalanceCents,
       paidCents: payouts.filter((payout) => payout.status === 'PAID').reduce((sum, payout) => sum + Number(payout.amountCents), 0),
       pendingPayoutCents: payouts.filter((payout) => ['PENDING', 'APPROVED', 'PROCESSING'].includes(payout.status)).reduce((sum, payout) => sum + Number(payout.amountCents), 0),
       payouts,

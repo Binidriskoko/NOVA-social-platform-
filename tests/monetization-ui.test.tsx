@@ -63,7 +63,7 @@ describe('creator and advertising UI', () => {
       metrics: { followers: 2, qualifiedViews: null, watchTimeSeconds: null, publicPosts: 1, engagements: 0, engagementRate: 0, accountAgeDays: 0 },
       requirements: [{ key: 'qualifiedViews', label: '1 qualified view', required: 1, actual: null, met: false, available: false }],
       applications: [],
-      earnings: { entries: [], estimatedBalanceCents: 0, paidCents: 0, pendingPayoutCents: 0, payouts: [] },
+      earnings: { entries: [], estimatedEarningsCents: null, confirmedEarningsCents: 1000, withdrawableBalanceCents: 500, paidCents: 0, pendingPayoutCents: 500, payouts: [] },
     })
     await act(async () => { root.render(<CreatorMonetizationPage />) })
     expect(host.textContent).toContain('Ba a auna ba')

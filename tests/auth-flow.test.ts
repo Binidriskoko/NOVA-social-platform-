@@ -333,7 +333,7 @@ describe('browser authentication session', () => {
     await expect(apiRequest('/api/posts', { method: 'POST', body: '{}' })).rejects.toMatchObject({
       code: 'GATEWAY_ERROR',
       status: 502,
-      message: 'The NOVAKOKO API gateway returned HTTP 502 with text/html content instead of JSON.',
+      message: 'The novachat API gateway returned HTTP 502 with text/html content instead of JSON.',
       details: {
         contentType: 'text/html',
         body: '<html>upstream unavailable</html>',
@@ -384,7 +384,7 @@ describe('browser authentication session', () => {
     await expect(apiRequest('/api/posts', { method: 'POST', body: '{}' })).rejects.toMatchObject({
       code: 'RATE_LIMITED',
       status: 429,
-      message: 'The NOVAKOKO API is rate limiting requests (HTTP 429). Please wait and try again.',
+      message: 'The novachat API is rate limiting requests (HTTP 429). Please wait and try again.',
     })
   })
 

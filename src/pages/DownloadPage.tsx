@@ -31,7 +31,7 @@ export function DownloadPage() {
     }
     await installPrompt.prompt()
     const choice = await installPrompt.userChoice
-    setStatus(choice.outcome === 'accepted' ? 'NOVAKOKO is ready on your device.' : 'Installation was dismissed.')
+    setStatus(choice.outcome === 'accepted' ? 'novachat is ready on your device.' : 'Installation was dismissed.')
     setInstallPrompt(null)
   }
 
@@ -39,17 +39,17 @@ export function DownloadPage() {
     <main className="download-page">
       <header className="download-header">
         <img src="/pwa-icon.svg" alt="" />
-        <span>NOVAKOKO</span>
+        <span>novachat</span>
       </header>
       <section className="download-hero">
         <div className="download-copy">
           <p className="download-eyebrow">Your community, within reach</p>
           <h1>Stay close to what matters.</h1>
-          <p>Install NOVAKOKO on your device for a faster, focused way to connect with your people.</p>
+          <p>Install novachat on your device for a faster, focused way to connect with your people.</p>
           <div className="download-actions">
             <button className="download-action download-action-primary" onClick={() => void installPwa()}>
               <Smartphone size={18} aria-hidden="true" />
-              Install NOVAKOKO
+              Install novachat
             </button>
             {apkAvailable ? (
               <a className="download-action" href={apkPath} download>
@@ -70,7 +70,7 @@ export function DownloadPage() {
         </div>
       </section>
       <footer className="download-footer">
-        <span>© NOVAKOKO</span>
+        <span>© novachat</span>
         <span>Installable on supported browsers</span>
       </footer>
     </main>

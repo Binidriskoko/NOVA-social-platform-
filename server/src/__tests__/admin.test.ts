@@ -186,8 +186,173 @@ describe('admin and moderation routes', () => {
     expect(queue.body.items.some((item: { id: string }) => item.id === report.id)).toBe(false);
   });
 
+  it('moderators soft-hide reported content, retain evidence, and can restore it', async () => {
+    const moderator = await makeUser({ email: 'content-moderator@example.com', name: 'Content Moderator', role: 'MODERATOR' });
+    const author = await makeUser({ email: 'content-author@example.com', name: 'Content Author' });
+    const reporter = await makeUser({ email: 'content-reporter@example.com', name: 'Content Reporter' });
+    const createdPost = await request(app)
+      .post('/api/posts')
+      .set('Cookie', getCookieHeader(author.login))
+      .send({ content: 'Reported content remains available as moderation evidence.' });
+    expect(createdPost.status).toBe(201);
+    const postId = createdPost.body.post.id as string;
+    const createdComment = await request(app)
+      .post(`/api/posts/${postId}/comments`)
+      .set('Cookie', getCookieHeader(author.login))
+      .send({ content: 'A reported comment remains in the audit history.' });
+    expect(createdComment.status).toBe(201);
+    const reports = await Promise.all([
+      request(app).post('/api/reports').set('Cookie', getCookieHeader(reporter.login)).send({
+        targetType: 'post',
+        targetId: postId,
+        category: 'SPAM',
+        reason: 'This post needs moderator review.',
+      }),
+      request(app).post('/api/reports').set('Cookie', getCookieHeader(reporter.login)).send({
+        targetType: 'comment',
+        targetId: createdComment.body.comment.id,
+        category: 'SPAM',
+        reason: 'This comment needs moderator review.',
+      }),
+    ]);
+    expect(reports.map((response) => response.status)).toEqual([201, 201]);
+
+    const postReport = reports[0].body.report;
+    const commentReport = reports[1].body.report;
+    const removed = await request(app)
+      .post(`/api/admin/moderation/${postReport.id}/remove`)
+      .set('Cookie', getCookieHeader(moderator.login))
+      .send({ reason: 'Confirmed policy violation.' });
+    expect(removed.status).toBe(200);
+    expect(await request(app).get(`/api/posts/${postId}`)).toHaveProperty('status', 404);
+    expect(socialStore.state.posts.find((post) => post.id === postId)).toMatchObject({
+      moderationHiddenById: moderator.user.id,
+      moderationReason: 'Confirmed policy violation.',
+    });
+    expect(socialStore.state.posts.find((post) => post.id === postId)?.moderationHiddenAt).toBeTruthy();
+    const restored = await request(app)
+      .post(`/api/admin/moderation/${postReport.id}/approve`)
+      .set('Cookie', getCookieHeader(moderator.login))
+      .send({ note: 'Reviewed and restored.' });
+    expect(restored.status).toBe(200);
+    expect((await request(app).get(`/api/posts/${postId}`)).status).toBe(200);
+
+    const removedComment = await request(app)
+      .post(`/api/admin/moderation/${commentReport.id}/remove`)
+      .set('Cookie', getCookieHeader(moderator.login))
+      .send({ note: 'Confirmed comment violation.' });
+    expect(removedComment.status).toBe(200);
+    const comments = await request(app).get(`/api/posts/${postId}/comments`);
+    expect(comments.body.comments).toHaveLength(0);
+    expect(socialStore.state.comments.find((comment) => comment.id === createdComment.body.comment.id)).toMatchObject({
+      moderationHiddenById: moderator.user.id,
+      moderationReason: 'Confirmed comment violation.',
+    });
+
+    const audit = fallbackStore.listAdminActions();
+    expect(audit.some((action) => action.actionType === 'MODERATION_REMOVED' && action.actorId === moderator.user.id)).toBe(true);
+    expect(audit.some((action) => action.actionType === 'MODERATION_APPROVED' && action.actorId === moderator.user.id)).toBe(true);
+    expect(audit.some((action) => action.actionType === 'MODERATION_REMOVED' && action.details?.includes('Confirmed policy violation.'))).toBe(true);
+  });
+
+  it('blocked users cannot retrieve each other’s public posts', async () => {
+    const author = await makeUser({ email: 'blocked-content-author@example.com', name: 'Author' });
+    const viewer = await makeUser({ email: 'blocked-content-viewer@example.com', name: 'Viewer' });
+    const post = await request(app)
+      .post('/api/posts')
+      .set('Cookie', getCookieHeader(author.login))
+      .send({ content: 'This public post should be hidden across the block relationship.' });
+    expect(post.status).toBe(201);
+    await request(app).post(`/api/users/${author.user.id}/block`).set('Cookie', getCookieHeader(viewer.login));
+
+    const feed = await request(app).get('/api/posts').set('Cookie', getCookieHeader(viewer.login));
+    expect(feed.body.posts.some((entry: { id: string }) => entry.id === post.body.post.id)).toBe(false);
+    const direct = await request(app).get(`/api/posts/${post.body.post.id}`).set('Cookie', getCookieHeader(viewer.login));
+    expect(direct.status).toBe(404);
+  });
+
+  it('moderators cannot claim removal of reports without a removable content target', async () => {
+    const moderator = await makeUser({ email: 'targetless-moderator@example.com', name: 'Moderator', role: 'MODERATOR' });
+    const reporter = await makeUser({ email: 'targetless-reporter@example.com', name: 'Reporter' });
+    const target = await makeUser({ email: 'targetless-target@example.com', name: 'Target' });
+    const report = {
+      id: 'targetless_report',
+      reporterId: reporter.user.id,
+      targetType: 'user' as const,
+      targetId: target.user.id,
+      category: 'OTHER' as const,
+      reason: 'Review this user account.',
+      createdAt: new Date().toISOString(),
+    };
+    socialStore.state.reports.push(report);
+
+    const response = await request(app)
+      .post(`/api/admin/moderation/${report.id}/remove`)
+      .set('Cookie', getCookieHeader(moderator.login))
+      .send({ reason: 'No content was identified.' });
+
+    expect(response.status).toBe(400);
+    expect(socialStore.state.reports[0].status).toBeUndefined();
+  });
+
+  it('moderation hides reported direct messages while retaining evidence and allows restoration', async () => {
+    const moderator = await makeUser({ email: 'message-moderator@example.com', name: 'Moderator', role: 'MODERATOR' });
+    const admin = await makeUser({ email: 'message-admin@example.com', name: 'Admin', role: 'ADMIN' });
+    const sender = await makeUser({ email: 'message-sender@example.com', name: 'Sender' });
+    const reporter = await makeUser({ email: 'message-reporter@example.com', name: 'Reporter' });
+    const conversation = await request(app)
+      .post('/api/conversations')
+      .set('Cookie', getCookieHeader(reporter.login))
+      .send({ participantId: sender.user.id });
+    const message = await request(app)
+      .post(`/api/conversations/${conversation.body.conversation.id}/messages`)
+      .set('Cookie', getCookieHeader(sender.login))
+      .send({ text: 'Reported private message evidence.' });
+    const submitted = await request(app)
+      .post(`/api/messages/${message.body.message.id}/report`)
+      .set('Cookie', getCookieHeader(reporter.login))
+      .send({ category: 'HARASSMENT', reason: 'This message needs a moderator review.' });
+    expect(submitted.status).toBe(201);
+    expect(submitted.body.report.messageId).toBe(message.body.message.id);
+
+    const removed = await request(app)
+      .post(`/api/admin/moderation/${submitted.body.report.id}/remove`)
+      .set('Cookie', getCookieHeader(moderator.login))
+      .send({ reason: 'Confirmed private-message policy violation.' });
+    expect(removed.status).toBe(200);
+    const history = await request(app)
+      .get(`/api/conversations/${conversation.body.conversation.id}`)
+      .set('Cookie', getCookieHeader(reporter.login));
+    expect(history.body.conversation.messages[0].text).toBe('[removed by moderators]');
+    expect(history.body.conversation.lastMessagePreview).toBe('[removed by moderators]');
+    expect(JSON.stringify(history.body)).not.toContain('Reported private message evidence.');
+    expect(socialStore.state.messages[0]).toMatchObject({
+      moderationHiddenById: moderator.user.id,
+      moderationReason: 'Confirmed private-message policy violation.',
+    });
+
+    const queue = await request(app)
+      .get('/api/admin/moderation/queue')
+      .set('Cookie', getCookieHeader(moderator.login));
+    expect(queue.body.items).toHaveLength(0);
+    const reportHistory = await request(app)
+      .get(`/api/admin/reports/${submitted.body.report.id}`)
+      .set('Cookie', getCookieHeader(admin.login));
+    expect(reportHistory.body.report.message.text).toBe('Reported private message evidence.');
+
+    const restored = await request(app)
+      .post(`/api/admin/moderation/${submitted.body.report.id}/approve`)
+      .set('Cookie', getCookieHeader(moderator.login))
+      .send({ note: 'Message was reviewed and restored.' });
+    expect(restored.status).toBe(200);
+    const restoredHistory = await request(app)
+      .get(`/api/conversations/${conversation.body.conversation.id}`)
+      .set('Cookie', getCookieHeader(reporter.login));
+    expect(restoredHistory.body.conversation.messages[0].text).toBe('Reported private message evidence.');
+  });
+
   it('Appeal cannot be approved by the appealing user', async () => {
-    const user = await makeUser({ email: 'appealer@example.com', name: 'Appealer', role: 'USER', status: 'SUSPENDED' });
+    const user = await makeUser({ email: 'appealer@example.com', name: 'Appealer', role: 'ADMIN' });
     const appeal = {
       id: 'appeal_1',
       userId: user.user.id,
@@ -207,7 +372,42 @@ describe('admin and moderation routes', () => {
       .send({ note: 'I approve my own appeal.' });
 
     expect(response.status).toBe(403);
-    expect(response.body.message).toMatch(/cannot.*approve/i);
+    expect(response.body.message).toMatch(/cannot.*review/i);
+  });
+
+  it('administrator approval restores the restricted account and records a single audited decision', async () => {
+    const admin = await makeUser({ email: 'appeal-admin@example.com', name: 'Appeal Admin', role: 'ADMIN' });
+    const appellant = await makeUser({
+      email: 'appeal-user@example.com',
+      name: 'Appeal User',
+      role: 'USER',
+      status: 'SUSPENDED',
+    });
+    const appeal = fallbackStore.createAppeal({
+      userId: appellant.user.id,
+      originalAction: 'USER_SUSPENDED',
+      reason: 'The restriction was applied to my account by mistake.',
+      status: 'OPEN',
+      reviewerId: null,
+      reviewerNote: null,
+      reviewedAt: null,
+    });
+
+    const response = await request(app)
+      .post(`/api/admin/appeals/${appeal.id}/approve`)
+      .set('Cookie', getCookieHeader(admin.login))
+      .send({ note: 'Reviewed the appeal and restored account access.' });
+
+    expect(response.status).toBe(200);
+    expect(response.body.appeal.status).toBe('APPROVED');
+    expect(fallbackStore.findById(appellant.user.id)?.status).toBe('ACTIVE');
+    expect(fallbackStore.listAdminActions().some((action) => action.actionType === 'APPEAL_APPROVED')).toBe(true);
+
+    const secondDecision = await request(app)
+      .post(`/api/admin/appeals/${appeal.id}/reject`)
+      .set('Cookie', getCookieHeader(admin.login))
+      .send({ note: 'This must not replace the first decision.' });
+    expect(secondDecision.status).toBe(409);
   });
 
   it('Subscription admin data comes from real records', async () => {

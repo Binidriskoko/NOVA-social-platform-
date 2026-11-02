@@ -53,6 +53,20 @@ npm run db:migrate:status
 
 `db:migrate:deploy` applies committed migrations without resetting data. The production container runs this command before starting the API. Do not use `db:push` or `migrate dev` against production.
 
+For the NOVACHAT account-appeal and moderation changes, the latest migrations are ordered as:
+
+1. `20261101000000_persist_account_appeals` creates persisted appeal records and their indexes/foreign keys.
+2. `20261102000000_soft_hide_moderated_content` adds moderation-hidden fields to posts, comments, and messages, and allows reports to reference messages.
+
+Both require the existing application tables created by earlier migrations. Check the target database with `npm run db:migrate:status` before release; if either is pending, it must be applied before the API version that uses those fields handles traffic. Do not infer the database's migration state from the deployed frontend or code version.
+
+## Manual Render and Vercel release sequence
+
+1. Confirm the intended commit is on `main` and that the Render and Vercel projects are connected to this repository. Back up PostgreSQL before a schema-changing release.
+2. Deploy that commit to the existing Render API service first. The Docker container runs `npm run db:migrate:deploy` before `npm start`, so pending migrations are applied before the new API accepts traffic. Check Render startup logs for migration completion and verify `https://nova-social-platform-api.onrender.com/api/health` reports `status: ok` and `database: ok`. If the service does not auto-deploy, select the intended commit in Render's dashboard and trigger a manual deploy. Do not run `db:push` or `migrate dev`.
+3. After the API and database health checks pass, deploy the same commit to the existing Vercel frontend project using the repository root, `npm ci`, `npm run build`, and `dist`. Do not set `VITE_API_BASE_URL` for production; the checked-in Vercel rewrite forwards API requests to Render.
+4. Verify the frontend at `https://nova-social-platform.vercel.app/`, then test authentication, account appeals/moderation, messaging, and media using non-production test accounts/data where appropriate. Do not change production credentials as part of the deploy.
+
 ## Build and start
 
 Backend (set `DATABASE_URL` in the runtime environment before migrating or starting the API):

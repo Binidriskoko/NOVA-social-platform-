@@ -1,5 +1,5 @@
 import { Link2, MapPin, PencilLine, UserRoundCheck, UserRoundPlus, UserRoundX } from 'lucide-react'
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useParams } from 'react-router-dom'
 import { Avatar } from '../components/ui/Avatar'
 import { Button } from '../components/ui/Button'
@@ -49,9 +49,11 @@ export function ProfilePage() {
   const [editDraft, setEditDraft] = useState({ displayName: '', username: '', bio: '', avatarUrl: '', coverUrl: '', website: '', location: '' })
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
+  const profileRequestId = useRef(0)
 
   const loadProfile = async () => {
-    if (!profileId) return
+    if (!profileId || !user?.id) return
+    const requestId = ++profileRequestId.current
     setLoading(true)
     setError('')
     try {
@@ -59,16 +61,32 @@ export function ProfilePage() {
         apiRequest<{ user: ProfileRecord }>(`/api/users/${encodeURIComponent(profileId)}`),
         apiRequest<{ posts: any[] }>('/api/posts?limit=100'),
       ])
-      setProfile(userResponse.user)
-      setPosts(postsResponse.posts.filter((post) => post.author.id === profileId).map(toPost))
+      if (requestId !== profileRequestId.current) return
+      const nextProfile = userResponse.user
+      const nextPosts = postsResponse.posts.filter((post) => post.author.id === profileId).map(toPost)
+      setProfile(nextProfile)
+      setPosts(nextPosts)
     } catch (loadError) {
+      if (requestId !== profileRequestId.current) return
       setError(loadError instanceof Error ? loadError.message : 'Unable to load this profile.')
     } finally {
-      setLoading(false)
+      if (requestId === profileRequestId.current) setLoading(false)
     }
   }
 
-  useEffect(() => { void loadProfile() }, [profileId])
+  useEffect(() => {
+    if (!profileId || !user?.id) {
+      profileRequestId.current += 1
+      setProfile(null)
+      setPosts([])
+      setLoading(false)
+      return
+    }
+    setProfile(null)
+    setPosts([])
+    void loadProfile()
+    return () => { profileRequestId.current += 1 }
+  }, [profileId, user?.id])
 
   const displayName = profile?.profile?.displayName ?? profile?.name ?? 'novachat user'
   const avatar = profile?.profile?.avatarUrl ?? ''
@@ -124,7 +142,10 @@ export function ProfilePage() {
     try {
       const following = relationship?.isFollowing ?? false
       const response = await apiRequest<{ following: boolean; followerCount: number }>(`/api/users/${encodeURIComponent(profile.id)}/follow`, { method: following ? 'DELETE' : 'POST' })
-      setProfile((current) => current ? { ...current, followerCount: response.followerCount, relationship: { ...current.relationship, isFollowing: response.following, blockedByMe: false, blockedMe: false } } : current)
+      setProfile((current) => {
+        if (!current) return current
+        return { ...current, followerCount: response.followerCount, relationship: { ...current.relationship, isFollowing: response.following, blockedByMe: false, blockedMe: false } }
+      })
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : 'Unable to update this connection.')
     } finally {
@@ -139,7 +160,10 @@ export function ProfilePage() {
     try {
       const blocked = relationship?.blockedByMe ?? false
       await apiRequest(`/api/users/${encodeURIComponent(profile.id)}/block`, { method: blocked ? 'DELETE' : 'POST' })
-      setProfile((current) => current ? { ...current, relationship: { ...current.relationship, isFollowing: current.relationship?.isFollowing ?? false, blockedByMe: !blocked, blockedMe: current.relationship?.blockedMe ?? false } } : current)
+      setProfile((current) => {
+        if (!current) return current
+        return { ...current, relationship: { ...current.relationship, isFollowing: current.relationship?.isFollowing ?? false, blockedByMe: !blocked, blockedMe: current.relationship?.blockedMe ?? false } }
+      })
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : 'Unable to update block settings.')
     } finally {
@@ -243,7 +267,11 @@ export function ProfilePage() {
         </section>
 
         <section className="space-y-5" aria-label="Profile posts">
-          {posts.length === 0 ? <p className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">No posts to show.</p> : posts.map((post) => <PostCard key={post.id} post={post} onDeleted={(postId) => setPosts((current) => current.filter((item) => item.id !== postId))} />)}
+          {posts.length === 0 ? <p className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">No posts to show.</p> : posts.map((post) => <PostCard
+            key={post.id}
+            post={post}
+            onDeleted={(postId) => setPosts((current) => current.filter((item) => item.id !== postId))}
+          />)}
         </section>
       </div>
     </div>

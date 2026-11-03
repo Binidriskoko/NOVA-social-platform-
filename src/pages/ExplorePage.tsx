@@ -29,7 +29,8 @@ export function ExplorePage() {
     setError('')
     try {
       const response = await apiRequest<{ users: DirectoryUser[] }>('/api/users')
-      setUsers(response.users.filter((directoryUser) => directoryUser.id !== user?.id))
+      const nextUsers = response.users.filter((directoryUser) => directoryUser.id !== user?.id)
+      setUsers(nextUsers)
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Unable to search users.')
     } finally {
@@ -37,7 +38,14 @@ export function ExplorePage() {
     }
   }
 
-  useEffect(() => { void loadUsers() }, [user?.id])
+  useEffect(() => {
+    if (!user?.id) {
+      setUsers([])
+      setLoading(true)
+      return
+    }
+    void loadUsers()
+  }, [user?.id])
 
   const filteredUsers = useMemo(() => users.filter((person) =>
     `${person.name} ${person.handle} ${person.profile?.bio ?? ''}`.toLowerCase().includes(term.trim().toLowerCase()),
@@ -52,9 +60,11 @@ export function ExplorePage() {
       const result = await apiRequest<{ following: boolean; followerCount: number }>(`/api/users/${encodeURIComponent(person.id)}/follow`, {
         method: following ? 'DELETE' : 'POST',
       })
-      setUsers((current) => current.map((entry) => entry.id === person.id
-        ? { ...entry, followerCount: result.followerCount, relationship: { ...entry.relationship, isFollowing: result.following, blockedByMe: false, blockedMe: false } }
-        : entry))
+      setUsers((current) => {
+        return current.map((entry) => entry.id === person.id
+          ? { ...entry, followerCount: result.followerCount, relationship: { ...entry.relationship, isFollowing: result.following, blockedByMe: false, blockedMe: false } }
+          : entry)
+      })
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : 'Unable to update this connection.')
     } finally {

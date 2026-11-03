@@ -1,5 +1,7 @@
-import { lazy, Suspense } from 'react'
-import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
+import { App as CapacitorApp } from '@capacitor/app'
+import { Capacitor } from '@capacitor/core'
+import { lazy, Suspense, useEffect, useRef } from 'react'
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { CommunitiesPage } from './pages/CommunitiesPage'
@@ -21,6 +23,7 @@ import { AdCampaignsPage } from './pages/AdCampaignsPage'
 import { CreatePage } from './pages/CreatePage'
 import { AccountAppealPage } from './pages/AccountAppealPage'
 import { UpdateChecker } from './components/UpdateChecker'
+import { getAndroidBackAction } from './lib/androidBackNavigation'
 
 const LivePage = lazy(() => import('./pages/LivePage').then(({ LivePage: page }) => ({ default: page })))
 const CallsPage = lazy(() => import('./pages/CallsPage').then(({ CallsPage: page }) => ({ default: page })))
@@ -84,6 +87,38 @@ function AdminRoute() {
   return <Outlet />
 }
 
+
+function AndroidBackHandler() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const locationRef = useRef(location)
+  locationRef.current = location
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return
+
+    let active = true
+    const listener = CapacitorApp.addListener('backButton', () => {
+      if (!active) return
+      const action = getAndroidBackAction(locationRef.current.pathname, window.history.state?.idx)
+      if (action === 'history') {
+        navigate(-1)
+      } else if (action === 'home') {
+        navigate('/', { replace: true })
+      } else {
+        void CapacitorApp.minimizeApp()
+      }
+    })
+
+    return () => {
+      active = false
+      void listener.then((handle) => handle.remove())
+    }
+  }, [navigate])
+
+  return null
+}
+
 function AppRoutes() {
   return (
     <Routes>
@@ -127,6 +162,7 @@ function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <AndroidBackHandler />
         <UpdateChecker />
         <AppRoutes />
       </BrowserRouter>

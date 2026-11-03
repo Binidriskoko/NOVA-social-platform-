@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { app } from '../app.js';
 import { fallbackStore } from '../lib/fallbackStore.js';
+import { commerceStore } from '../lib/commerceStore.js';
 import { hashPassword } from '../lib/auth.js';
 import { socialStore } from '../lib/socialStore.js';
 
@@ -40,6 +41,7 @@ async function makeUser(input: {
 describe('admin and moderation routes', () => {
   beforeEach(() => {
     fallbackStore.clear();
+    commerceStore.clear();
     socialStore.clear();
   });
 
@@ -118,6 +120,17 @@ describe('admin and moderation routes', () => {
   it('unauthorized admin request returns 401/403 appropriately', async () => {
     const response = await request(app).get('/api/admin/users');
     expect(response.status).toBe(401);
+  });
+
+  it('restricts earnings and revenue APIs to administrators', async () => {
+    const user = await makeUser({ email: 'revenue-user@example.com', name: 'Regular User' });
+    const moderator = await makeUser({ email: 'revenue-mod@example.com', name: 'Moderator', role: 'MODERATOR' });
+
+    for (const endpoint of ['/api/admin/earnings', '/api/admin/revenue']) {
+      expect((await request(app).get(endpoint)).status).toBe(401);
+      expect((await request(app).get(endpoint).set('Cookie', getCookieHeader(user.login))).status).toBe(403);
+      expect((await request(app).get(endpoint).set('Cookie', getCookieHeader(moderator.login))).status).toBe(403);
+    }
 
     const { login } = await makeUser({ email: 'regular@example.com', name: 'Regular', role: 'USER' });
     const forbidden = await request(app)
@@ -471,39 +484,89 @@ describe('admin and moderation routes', () => {
     expect(response.body.payments[0].amountCents).toBe(1999);
   });
 
-  it('Revenue calculations are correct', async () => {
+  it('returns real earnings and revenue from successful payments and financial records', async () => {
     const { login } = await makeUser({ email: 'admin@example.com', name: 'Admin User', role: 'ADMIN' });
     const user = await makeUser({ email: 'creator@example.com', name: 'Creator', role: 'USER' });
 
-    socialStore.state.subscriptions.push({
-      id: 'sub_2',
-      userId: user.user.id,
-      planId: 'plan_2',
-      status: 'ACTIVE',
-      currentPeriodStart: new Date().toISOString(),
-      currentPeriodEnd: new Date(Date.now() + 86400000).toISOString(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
     socialStore.state.payments.push({
-      id: 'pay_2',
-      subscriptionId: 'sub_2',
+      id: 'pay_legacy',
+      subscriptionId: 'sub_legacy',
       userId: user.user.id,
       provider: 'stripe',
-      providerReference: 'pi_456',
+      providerReference: 'pi_shared',
       amountCents: 2000,
       currency: 'USD',
       status: 'SUCCESS',
       createdAt: new Date().toISOString(),
     } as any);
+    socialStore.state.payments.push({
+      id: 'pay_pending',
+      subscriptionId: 'sub_pending',
+      userId: user.user.id,
+      provider: 'stripe',
+      providerReference: 'pi_pending',
+      amountCents: 9000,
+      currency: 'USD',
+      status: 'PENDING',
+      createdAt: new Date().toISOString(),
+    } as any);
+    commerceStore.state.paymentIntents.push(
+      { id: 'intent_duplicate', provider: 'stripe', providerReference: 'pi_shared', amountCents: 2000, currency: 'USD', purpose: 'PLATFORM_SUBSCRIPTION', status: 'SUCCESS' },
+      { id: 'intent_success', provider: 'stripe', providerReference: 'pi_modern', amountCents: 3000, currency: 'USD', purpose: 'CREATOR_SUBSCRIPTION', status: 'SUCCESS' },
+      { id: 'intent_marketplace', provider: 'stripe', providerReference: 'pi_marketplace', amountCents: 6000, currency: 'USD', purpose: 'MARKETPLACE_ORDER', status: 'SUCCESS' },
+      { id: 'intent_failed', provider: 'stripe', providerReference: 'pi_failed', amountCents: 7000, currency: 'USD', purpose: 'PLATFORM_SUBSCRIPTION', status: 'FAILED' },
+    );
+    commerceStore.state.creatorLedger.push(
+      { id: 'creator-earning', creatorId: user.user.id, type: 'SUBSCRIPTION', amountCents: 1200, currency: 'USD' },
+      { id: 'creator-payout-request', creatorId: user.user.id, type: 'PAYOUT_REQUESTED', amountCents: -300, currency: 'USD' },
+    );
+    commerceStore.state.creatorPayouts.push(
+      { id: 'payout-pending', creatorId: user.user.id, amountCents: 300, status: 'PENDING' },
+      { id: 'payout-paid', creatorId: user.user.id, amountCents: 400, status: 'PAID' },
+      { id: 'payout-rejected', creatorId: user.user.id, amountCents: 700, status: 'REJECTED' },
+    );
+    commerceStore.state.financialLedger.push(
+      { id: 'platform-credit', ownerId: 'platform', direction: 'CREDIT', amountCents: 2500 },
+      { id: 'platform-debit', ownerId: 'platform', direction: 'DEBIT', amountCents: 500 },
+      { id: 'creator-credit', ownerId: user.user.id, direction: 'CREDIT', amountCents: 1200 },
+    );
+    commerceStore.state.adEvents.push(
+      { id: 'ad-impression', eventType: 'IMPRESSION', amountCents: 100 },
+      { id: 'ad-click', eventType: 'CLICK', amountCents: 200 },
+    );
 
-    const response = await request(app)
+    const earnings = await request(app)
+      .get('/api/admin/earnings')
+      .set('Cookie', getCookieHeader(login));
+    expect(earnings.status).toBe(200);
+    expect(earnings.body.metrics).toMatchObject({
+      estimatedEarningsCents: null,
+      confirmedEarningsCents: 1200,
+      pendingPayoutCents: 300,
+      paidCents: 400,
+      withdrawableBalanceCents: 900,
+    });
+    expect(earnings.body.entries).toHaveLength(2);
+
+    const revenue = await request(app)
       .get('/api/admin/revenue')
       .set('Cookie', getCookieHeader(login));
+    expect(revenue.status).toBe(200);
+    expect(revenue.body.metrics).toEqual({
+      grossRevenue: 11000,
+      platformRevenue: 2000,
+      creatorNetEarnings: 1200,
+      adSpendCents: 300,
+      adImpressions: 1,
+      adClicks: 1,
+      pendingPayouts: 300,
+    });
 
-    expect(response.status).toBe(200);
-    expect(response.body.metrics.grossRevenue).toBe(2000);
-    expect(response.body.metrics.platformRevenue).toBeGreaterThanOrEqual(0);
+    const dashboard = await request(app)
+      .get('/api/admin/dashboard')
+      .set('Cookie', getCookieHeader(login));
+    expect(dashboard.status).toBe(200);
+    expect(dashboard.body.metrics.subscriptionRevenue).toBe(5000);
   });
 
   it('Banned user cannot bypass the account status restriction', async () => {

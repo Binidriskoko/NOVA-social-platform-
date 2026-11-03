@@ -183,6 +183,32 @@ async function loadPayments() {
   }));
 }
 
+type RevenuePayment = {
+  status: string;
+  provider?: string | null;
+  providerReference?: string | null;
+  amountCents: number;
+};
+
+function isSuccessfulRevenuePayment(value: unknown): value is RevenuePayment {
+  if (typeof value !== 'object' || value === null || !('status' in value) || !('amountCents' in value)) return false;
+  if (typeof value.status !== 'string' || !['SUCCESS', 'PAID'].includes(value.status) || typeof value.amountCents !== 'number') return false;
+  if ('provider' in value && value.provider !== undefined && value.provider !== null && typeof value.provider !== 'string') return false;
+  return !('providerReference' in value) || value.providerReference === undefined || value.providerReference === null || typeof value.providerReference === 'string';
+}
+
+function uniqueSuccessfulPayments(payments: unknown[]) {
+  const seenProviderReferences = new Set<string>();
+  return payments.filter(isSuccessfulRevenuePayment).filter((payment) => {
+    if (!payment.providerReference) return true;
+
+    const reference = `${payment.provider ?? 'unknown'}:${payment.providerReference}`;
+    if (seenProviderReferences.has(reference)) return false;
+    seenProviderReferences.add(reference);
+    return true;
+  });
+}
+
 async function loadAppeals() {
   if (await isDatabaseAvailable()) {
     return prisma.appeal.findMany({
@@ -220,10 +246,13 @@ adminRouter.get('/dashboard', requireAdminAccess, async (req, res) => {
   const subscriptions = await loadSubscriptions();
   const payments = await loadPayments();
   const databaseAvailable = await isDatabaseAvailable();
-  const [creatorLedger, financialLedger, creatorPayouts] = await Promise.all([
+  const [creatorLedger, financialLedger, creatorPayouts, paymentIntents] = await Promise.all([
     databaseAvailable ? prisma.creatorLedgerEntry.findMany({ select: { amountCents: true } }) : Promise.resolve(commerceStore.state.creatorLedger),
     databaseAvailable ? prisma.financialLedgerEntry.findMany({ select: { ownerId: true, direction: true, amountCents: true } }) : Promise.resolve(commerceStore.state.financialLedger),
     databaseAvailable ? prisma.creatorPayoutRequest.findMany({ select: { status: true, amountCents: true } }) : Promise.resolve(commerceStore.state.creatorPayouts),
+    databaseAvailable
+      ? prisma.paymentIntent.findMany({ where: { status: 'SUCCESS' }, select: { status: true, provider: true, providerReference: true, amountCents: true, purpose: true } })
+      : Promise.resolve(commerceStore.state.paymentIntents),
   ]);
   const adminActions = await (async () => {
     if (await isDatabaseAvailable()) {
@@ -252,13 +281,17 @@ adminRouter.get('/dashboard', requireAdminAccess, async (req, res) => {
   const resolvedReports = reports.filter((report: any) => report.status === 'RESOLVED').length;
   const pendingModerationItems = reports.filter((report: any) => (report.status ?? 'OPEN') !== 'RESOLVED' && (report.status ?? 'OPEN') !== 'REJECTED').length;
 
-  const successfulPayments = payments.filter((payment: any) => payment.status === 'SUCCESS' || payment.status === 'PAID');
+  const successfulPayments = uniqueSuccessfulPayments([...payments, ...paymentIntents]);
   const grossRevenue = successfulPayments.reduce((sum: number, payment: any) => sum + Number(payment.amountCents ?? 0), 0);
+  const subscriptionPayments = uniqueSuccessfulPayments([
+    ...payments,
+    ...paymentIntents.filter((payment) => ['CREATOR_SUBSCRIPTION', 'PLATFORM_SUBSCRIPTION'].includes(payment.purpose)),
+  ]);
   const platformRevenue = financialLedger.filter((entry) => entry.ownerId === 'platform' && entry.direction === 'CREDIT').reduce((sum, entry) => sum + Number(entry.amountCents), 0);
   const creatorNetEarnings = creatorLedger.filter((entry) => ['SUBSCRIPTION', 'SUBSCRIPTION_REFUND'].includes(entry.type)).reduce((sum, entry) => sum + Number(entry.amountCents), 0);
   const pendingPayouts = creatorPayouts.filter((payout) => ['PENDING', 'APPROVED', 'PROCESSING'].includes(payout.status)).reduce((sum, payout) => sum + Number(payout.amountCents), 0);
   const activeSubscriptions = subscriptions.filter((subscription: any) => ['ACTIVE', 'TRIALING'].includes(subscription.status)).length;
-  const subscriptionRevenue = grossRevenue;
+  const subscriptionRevenue = subscriptionPayments.reduce((sum, payment) => sum + Number(payment.amountCents ?? 0), 0);
 
   return res.json({
     metrics: {
@@ -865,8 +898,23 @@ adminRouter.get('/earnings', requireAdminAccess, async (_req, res) => {
   const entries = await isDatabaseAvailable()
     ? await prisma.creatorLedgerEntry.findMany({ orderBy: { createdAt: 'desc' } })
     : commerceStore.state.creatorLedger;
-  const totalEarnings = entries.reduce((sum, entry) => sum + Number(entry.amountCents), 0);
-  return res.json({ totalEarnings, entries });
+  const payouts = await isDatabaseAvailable()
+    ? await prisma.creatorPayoutRequest.findMany()
+    : commerceStore.state.creatorPayouts;
+  const confirmedEarningsCents = entries
+    .filter((entry) => ['SUBSCRIPTION', 'SUBSCRIPTION_REFUND'].includes(entry.type))
+    .reduce((sum, entry) => sum + Number(entry.amountCents), 0);
+  const withdrawableBalanceCents = entries.reduce((sum, entry) => sum + Number(entry.amountCents), 0);
+  return res.json({
+    metrics: {
+      estimatedEarningsCents: null,
+      confirmedEarningsCents,
+      pendingPayoutCents: payouts.filter((payout) => ['PENDING', 'APPROVED', 'PROCESSING'].includes(payout.status)).reduce((sum, payout) => sum + Number(payout.amountCents), 0),
+      paidCents: payouts.filter((payout) => payout.status === 'PAID').reduce((sum, payout) => sum + Number(payout.amountCents), 0),
+      withdrawableBalanceCents,
+    },
+    entries,
+  });
 });
 
 adminRouter.get('/payouts', requireAdminAccess, async (_req, res) => {
@@ -878,14 +926,19 @@ adminRouter.get('/payouts', requireAdminAccess, async (_req, res) => {
 
 adminRouter.get('/revenue', requireAdminAccess, async (_req, res) => {
   const databaseAvailable = await isDatabaseAvailable();
-  const [creatorEntries, financialEntries, payouts, paymentIntents, adEvents] = await Promise.all([
+  const [creatorEntries, financialEntries, payouts, payments, adEvents] = await Promise.all([
     databaseAvailable ? prisma.creatorLedgerEntry.findMany() : Promise.resolve(commerceStore.state.creatorLedger),
     databaseAvailable ? prisma.financialLedgerEntry.findMany() : Promise.resolve(commerceStore.state.financialLedger),
     databaseAvailable ? prisma.creatorPayoutRequest.findMany() : Promise.resolve(commerceStore.state.creatorPayouts),
-    databaseAvailable ? prisma.paymentIntent.findMany({ where: { status: 'SUCCESS' }, select: { amountCents: true } }) : Promise.resolve(commerceStore.state.paymentIntents.filter((intent) => intent.status === 'SUCCESS')),
+    databaseAvailable
+      ? Promise.all([
+          prisma.payment.findMany({ where: { status: { in: ['PAID', 'SUCCESS'] } }, select: { status: true, provider: true, providerReference: true, amountCents: true } }),
+          prisma.paymentIntent.findMany({ where: { status: 'SUCCESS' }, select: { status: true, provider: true, providerReference: true, amountCents: true } }),
+        ]).then(([legacyPayments, paymentIntents]) => [...legacyPayments, ...paymentIntents])
+      : Promise.resolve([...socialStore.state.payments, ...commerceStore.state.paymentIntents]),
     databaseAvailable ? prisma.adEvent.findMany({ select: { eventType: true, amountCents: true } }) : Promise.resolve(commerceStore.state.adEvents),
   ]);
-  const grossRevenue = paymentIntents.reduce((sum, payment) => sum + Number(payment.amountCents), 0);
+  const grossRevenue = uniqueSuccessfulPayments(payments).reduce((sum, payment) => sum + Number(payment.amountCents ?? 0), 0);
   const platformRevenue = financialEntries.filter((entry) => entry.ownerId === 'platform').reduce((sum, entry) => sum + (entry.direction === 'CREDIT' ? Number(entry.amountCents) : -Number(entry.amountCents)), 0);
   const creatorNetEarnings = creatorEntries.filter((entry) => ['SUBSCRIPTION', 'SUBSCRIPTION_REFUND'].includes(entry.type)).reduce((sum, entry) => sum + Number(entry.amountCents), 0);
   const adSpendCents = adEvents.reduce((sum, event) => sum + Number(event.amountCents), 0);

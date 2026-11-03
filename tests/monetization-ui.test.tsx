@@ -3,11 +3,11 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const testState = vi.hoisted(() => ({ apiRequest: vi.fn() }))
+const testState = vi.hoisted(() => ({ apiRequest: vi.fn(), fetchMediaBlob: vi.fn() }))
 
 vi.mock('../src/lib/api', () => ({
   apiRequest: testState.apiRequest,
-  fetchMediaBlob: vi.fn(),
+  fetchMediaBlob: testState.fetchMediaBlob,
   resolveMediaUrl: (url: string) => url,
 }))
 
@@ -31,6 +31,42 @@ afterEach(() => {
 })
 
 describe('creator and advertising UI', () => {
+  it('streams uploaded videos with credentials and defers inactive autoplay clips', async () => {
+    await act(async () => {
+      root.render(<PostMedia url="/api/media/files/00000000-0000-0000-0000-000000000001.mp4" autoPlay active />)
+    })
+
+    const video = host.querySelector('video')!
+    expect(video.crossOrigin).toBe('use-credentials')
+    expect(video.preload).toBe('auto')
+    expect(video.muted).toBe(true)
+    expect(testState.fetchMediaBlob).not.toHaveBeenCalled()
+
+    await act(async () => {
+      root.render(<PostMedia url="/api/media/files/00000000-0000-0000-0000-000000000001.mp4" autoPlay active={false} />)
+    })
+    expect(host.querySelector('video')?.preload).toBe('none')
+  })
+
+  it('keeps mute controls user-toggleable and exposes retry after playback errors', async () => {
+    await act(async () => {
+      root.render(<PostMedia url="https://cdn.example.test/clip.mp4" autoPlay active />)
+    })
+
+    const video = host.querySelector('video')!
+    video.muted = false
+    await act(async () => { video.dispatchEvent(new Event('volumechange')) })
+    expect(video.muted).toBe(false)
+
+    await act(async () => { video.dispatchEvent(new Event('error')) })
+    expect(host.textContent).toContain('Check your connection and retry')
+    const previousVideo = host.querySelector('video')
+    const retry = [...host.querySelectorAll('button')].find((button) => button.textContent === 'Retry')
+    await act(async () => { retry?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    expect(host.querySelector('video')).not.toBe(previousVideo)
+    expect(host.textContent).not.toContain('Check your connection and retry')
+  })
+
   it('flushes the final video position before closing playback on pause', async () => {
     testState.apiRequest.mockResolvedValue({})
     await act(async () => { root.render(<PostMedia url="https://cdn.example.test/clip.mp4" postId="post-1" />) })
@@ -67,6 +103,9 @@ describe('creator and advertising UI', () => {
     })
     await act(async () => { root.render(<CreatorMonetizationPage />) })
     expect(host.textContent).toContain('Ba a auna ba')
+    expect(host.textContent).toContain('Ba a samu ba')
+    expect(host.textContent).toContain('Tabbataccen kuɗin shiga')
+    expect(host.textContent).toContain('Kuɗin da za a iya cirewa')
     const applyButton = [...host.querySelectorAll('button')].find((button) => button.textContent?.includes('Nemi shiga'))
     expect(applyButton?.disabled).toBe(true)
     expect(testState.apiRequest).toHaveBeenCalledWith('/api/creators/me/monetization')

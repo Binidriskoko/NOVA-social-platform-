@@ -14,13 +14,38 @@ type PostMediaProps = {
 
 export function PostMedia({ url, alt = 'Post attachment', className = '', active = true, autoPlay = false, postId, measurementSource = 'unknown' }: PostMediaProps) {
   const [loaded, setLoaded] = useState<{ url: string; source: string; error: string }>({ url: '', source: '', error: '' })
+  const [playbackError, setPlaybackError] = useState('')
+  const [playbackLoading, setPlaybackLoading] = useState(true)
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false)
+  const [muted, setMuted] = useState(autoPlay)
+  const [retryCount, setRetryCount] = useState(0)
+  const [loadTarget, setLoadTarget] = useState<HTMLElement | null>(null)
+  const [nearViewport, setNearViewport] = useState(false)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const sessionRef = useRef<{ sessionId: string; startRequest: Promise<boolean>; lastSentTime: number; lastObservedTime: number; heartbeatRequest: Promise<void> | null } | null>(null)
   const isUploaded = url.startsWith('/api/media/')
   const isVideo = isVideoPostMediaUrl(url)
+  const streamsUploadedVideo = isVideo && url.startsWith('/api/media/files/')
 
   useEffect(() => {
-    if (!isUploaded) return
+    if (!isUploaded || streamsUploadedVideo || nearViewport || !loadTarget) return
+    if (!('IntersectionObserver' in window)) {
+      setNearViewport(true)
+      return
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setNearViewport(true)
+        observer.disconnect()
+      }
+    }, { rootMargin: '300px' })
+    observer.observe(loadTarget)
+    return () => observer.disconnect()
+  }, [isUploaded, loadTarget, nearViewport, streamsUploadedVideo])
+
+  useEffect(() => {
+    if (!isUploaded || streamsUploadedVideo || !nearViewport) return
     const controller = new AbortController()
     let objectUrl = ''
     void fetchMediaBlob(url, controller.signal).then((blob) => {
@@ -36,14 +61,24 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
       controller.abort()
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [isUploaded, url])
+  }, [isUploaded, nearViewport, retryCount, streamsUploadedVideo, url])
+
+  useEffect(() => {
+    setPlaybackError('')
+    setPlaybackLoading(true)
+    setAutoplayBlocked(false)
+    setMuted(autoPlay)
+  }, [autoPlay, url])
 
   useEffect(() => {
     const video = videoRef.current
     if (!video || !autoPlay) return
-    if (active) void video.play().catch(() => undefined)
-    else video.pause()
-  }, [active, autoPlay, loaded.source])
+    if (active) {
+      void video.play().catch(() => setAutoplayBlocked(true))
+    } else {
+      video.pause()
+    }
+  }, [active, autoPlay, loaded.source, retryCount])
 
   useEffect(() => {
     const video = videoRef.current
@@ -73,7 +108,16 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
       }
     }
 
+    let heartbeatTimer: number | undefined
+    const clearHeartbeat = () => {
+      if (heartbeatTimer !== undefined) {
+        window.clearInterval(heartbeatTimer)
+        heartbeatTimer = undefined
+      }
+    }
+
     const finalizePlayback = async () => {
+      clearHeartbeat()
       const session = sessionRef.current
       if (!session) return
       sessionRef.current = null
@@ -101,6 +145,7 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
         startRequest: Promise.resolve(false),
       }
       sessionRef.current = session
+      heartbeatTimer = window.setInterval(() => { void sendHeartbeat(session) }, 5_000)
       session.startRequest = apiRequest('/api/monetization/video-views/start', {
         method: 'POST',
         body: JSON.stringify({ postId, sessionId, durationSeconds: Math.max(1, Math.ceil(video.duration)), startPositionSeconds: video.currentTime, source: measurementSource }),
@@ -108,11 +153,6 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
         console.warn('Video playback measurement session could not be started.', error)
         return false
       })
-    }
-
-    const heartbeat = async () => {
-      const session = sessionRef.current
-      if (session) await sendHeartbeat(session)
     }
 
     const handleTimeUpdate = () => {
@@ -129,7 +169,6 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
       if (document.hidden) finalizeAtCurrentPosition()
       else if (!video.paused) handlePlay()
     }
-    const heartbeatTimer = window.setInterval(() => { void heartbeat() }, 5_000)
 
     video.addEventListener('play', handlePlay)
     video.addEventListener('loadedmetadata', handlePlay)
@@ -139,7 +178,7 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
     document.addEventListener('visibilitychange', handleVisibility)
 
     return () => {
-      window.clearInterval(heartbeatTimer)
+      clearHeartbeat()
       video.removeEventListener('play', handlePlay)
       video.removeEventListener('loadedmetadata', handlePlay)
       video.removeEventListener('timeupdate', handleTimeUpdate)
@@ -148,13 +187,62 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
       document.removeEventListener('visibilitychange', handleVisibility)
       if (sessionRef.current) void finalizePlayback()
     }
-  }, [isVideo, measurementSource, postId, url])
+  }, [isVideo, measurementSource, postId, retryCount, url])
 
-  const source = isUploaded ? loaded.url === url ? loaded.source : '' : resolveMediaUrl(url)
-  if (isUploaded && loaded.url !== url) return <p className="text-sm text-slate-500" role="status">Loading media…</p>
-  if (isUploaded && loaded.url === url && loaded.error) return <p className="text-sm text-rose-700" role="alert">{loaded.error}</p>
+  const source = streamsUploadedVideo
+    ? resolveMediaUrl(url)
+    : isUploaded ? loaded.url === url ? loaded.source : '' : resolveMediaUrl(url)
+  if (isUploaded && !streamsUploadedVideo && loaded.url !== url) return <div ref={setLoadTarget}>
+    <p className="text-sm text-slate-500" role="status">{nearViewport ? 'Loading media…' : 'Media will load when near the screen…'}</p>
+  </div>
+  if (isUploaded && !streamsUploadedVideo && loaded.url === url && loaded.error) return <div ref={setLoadTarget}>
+    <p className="text-sm text-rose-700" role="alert">{loaded.error}</p>
+    <button type="button" className="mt-1 text-sm font-semibold underline" onClick={() => {
+      setLoaded({ url: '', source: '', error: '' })
+      setRetryCount((count) => count + 1)
+    }}>Retry media</button>
+  </div>
   if (isVideo) {
-    return <video ref={videoRef} src={source} controls muted={autoPlay} autoPlay={autoPlay && active} loop={autoPlay} playsInline preload="metadata" className={className} aria-label={alt} />
+    return (
+      <div className="relative">
+        <video
+          key={`${url}-${retryCount}`}
+          ref={videoRef}
+          src={source}
+          crossOrigin={streamsUploadedVideo ? 'use-credentials' : undefined}
+          controls
+          muted={muted}
+          autoPlay={autoPlay && active}
+          loop={autoPlay}
+          playsInline
+          preload={autoPlay && active ? 'auto' : 'none'}
+          className={className}
+          aria-label={alt}
+          onLoadedData={() => { setPlaybackLoading(false); setPlaybackError('') }}
+          onPlaying={() => { setPlaybackLoading(false); setPlaybackError(''); setAutoplayBlocked(false) }}
+          onWaiting={() => setPlaybackLoading(true)}
+          onCanPlay={() => setPlaybackLoading(false)}
+          onVolumeChange={(event) => setMuted(event.currentTarget.muted)}
+          onError={() => {
+            setPlaybackLoading(false)
+            setPlaybackError('This video could not be played. Check your connection and retry.')
+          }}
+        />
+        {playbackLoading && autoPlay && active && !playbackError ? <p className="absolute left-3 top-3 rounded bg-black/70 px-2 py-1 text-xs text-white" role="status">Loading video…</p> : null}
+        {autoplayBlocked && !playbackError ? <p className="absolute bottom-12 left-3 rounded bg-black/70 px-2 py-1 text-xs text-white" role="status">Playback did not start automatically. Press play to start.</p> : null}
+        {playbackError ? (
+          <div className="absolute inset-x-3 bottom-12 flex items-center justify-between gap-3 rounded bg-black/85 p-3 text-sm text-white" role="alert">
+            <span>{playbackError}</span>
+            <button type="button" className="shrink-0 underline" onClick={() => {
+              setPlaybackError('')
+              setPlaybackLoading(true)
+              setAutoplayBlocked(false)
+              setRetryCount((count) => count + 1)
+            }}>Retry</button>
+          </div>
+        ) : null}
+      </div>
+    )
   }
-  return <img src={source} alt={alt} className={className} />
+  return <img src={source} alt={alt} loading="lazy" decoding="async" className={className} />
 }

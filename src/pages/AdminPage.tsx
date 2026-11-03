@@ -76,7 +76,7 @@ export function AdminPage() {
   }
   const filteredUsers = useMemo(() => getRows(payload, 'users').filter((item) => `${item.name ?? ''} ${item.email ?? ''} ${item.username ?? ''}`.toLowerCase().includes(search.toLowerCase())), [payload, search])
   const analyticsRows = useMemo(() => getRows((payload?.analytics as RecordValue | undefined) ?? null, 'creators').filter((item) => `${item.creatorName ?? ''}`.toLowerCase().includes(search.toLowerCase())), [payload, search])
-  const rows = section === 'users' ? filteredUsers : section === 'reports' ? getRows(payload, 'reports') : section === 'moderation' ? getRows(payload, 'items') : section === 'appeals' ? getRows(payload, 'appeals') : section === 'audit' ? getRows(payload, 'logs') : section === 'earnings' ? getRows(payload, 'entries') : section === 'creatorApplications' ? getRows(payload, 'applications') : section === 'creatorAccounts' ? getRows(payload, 'creators') : section === 'creatorAnalytics' ? analyticsRows : section === 'ads' ? getRows(payload, 'campaigns') : section === 'placements' ? getRows(payload, 'placements') : section === 'adAnalytics' ? (payload?.analytics ? [payload.analytics as RecordValue] : []) : section === 'revenue' ? getRows(payload, 'metrics').concat(payload?.metrics && typeof payload.metrics === 'object' ? [payload.metrics as RecordValue] : []) : getRows(payload, section)
+  const rows = section === 'users' ? filteredUsers : section === 'reports' ? getRows(payload, 'reports') : section === 'moderation' ? getRows(payload, 'items') : section === 'appeals' ? getRows(payload, 'appeals') : section === 'audit' ? getRows(payload, 'logs') : section === 'earnings' ? getRows(payload, 'entries') : section === 'creatorApplications' ? getRows(payload, 'applications') : section === 'creatorAccounts' ? getRows(payload, 'creators') : section === 'creatorAnalytics' ? analyticsRows : section === 'ads' ? getRows(payload, 'campaigns') : section === 'placements' ? getRows(payload, 'placements') : section === 'adAnalytics' ? (payload?.analytics ? [payload.analytics as RecordValue] : []) : section === 'revenue' ? [] : getRows(payload, section)
   if (!user || !['ADMIN', 'SUPER_ADMIN', 'MODERATOR'].includes(user.role ?? '')) return <div className="p-6 text-sm text-slate-600">You do not have access to the admin center.</div>
 
   return <div className="space-y-5 p-4 pb-24 sm:p-6"><header className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.28em] text-violet-600">Operations</p><h1 className="mt-2 text-2xl font-semibold text-slate-900">Management center</h1><p className="mt-1 text-sm text-slate-500">Keep novachat healthy, helpful, and moving.</p></div><div className="inline-flex w-fit items-center gap-2 rounded-full bg-violet-50 px-3 py-2 text-sm font-medium text-violet-700"><ShieldCheck className="h-4 w-4" aria-hidden="true" />{isModerator ? 'Moderator access' : 'Protected admin view'}</div></div><nav className="mt-5 -mx-1 flex gap-1 overflow-x-auto px-1 pb-1" aria-label="Admin sections">{availableSections.map(({ id, label, icon: Icon }) => <button key={id} type="button" onClick={() => { setSection(id); setSearch(''); setSuccess(null) }} className={`flex shrink-0 items-center gap-2 rounded-full px-3 py-2 text-sm font-medium transition ${section === id ? 'bg-violet-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}><Icon className="h-4 w-4" aria-hidden="true" />{label}</button>)}</nav></header>
@@ -87,9 +87,47 @@ export function AdminPage() {
       {section === 'monetization' ? <MonetizationSettingsForm onSaved={() => setRefreshKey((current) => current + 1)} /> : null}
       {section === 'ads' ? <AdvertisingSettingsForm onSaved={() => setRefreshKey((current) => current + 1)} /> : null}
       {section === 'placements' ? <AdPlacementForm onSaved={() => setRefreshKey((current) => current + 1)} /> : null}
-      {isLoading ? <LoadingState /> : ['monetization', 'placements'].includes(section) ? null : section === 'creatorAnalytics' ? <CreatorAnalytics data={(payload?.analytics ?? {}) as RecordValue} rows={rows} /> : rows.length === 0 ? <EmptyState label={section === 'moderation' ? 'The moderation queue is clear.' : 'No records found in this section.'} /> : section === 'creatorApplications' ? <CreatorApplicationTable rows={rows} onAction={setAction} /> : section === 'creatorAccounts' ? <CreatorAccountTable rows={rows} onAction={setAction} /> : section === 'ads' ? <AdCampaignTable rows={rows} onAction={setAction} /> : section === 'payouts' ? <PayoutReviewTable rows={rows} onAction={setAction} /> : section === 'adAnalytics' ? <AdAnalytics data={(payload?.analytics ?? {}) as RecordValue} /> : <DataTable section={section} rows={rows} onView={handleView} onAction={setAction} />}
+      {section === 'earnings' && payload?.metrics ? <EarningsSummary metrics={payload.metrics as RecordValue} /> : null}
+      {section === 'revenue' && payload?.metrics ? <RevenueSummary metrics={payload.metrics as RecordValue} /> : null}
+      {isLoading ? <LoadingState /> : section === 'revenue' ? payload?.metrics ? null : <EmptyState label="Revenue data is unavailable." /> : ['monetization', 'placements'].includes(section) ? null : section === 'creatorAnalytics' ? <CreatorAnalytics data={(payload?.analytics ?? {}) as RecordValue} rows={rows} /> : rows.length === 0 ? <EmptyState label={section === 'moderation' ? 'The moderation queue is clear.' : 'No records found in this section.'} /> : section === 'creatorApplications' ? <CreatorApplicationTable rows={rows} onAction={setAction} /> : section === 'creatorAccounts' ? <CreatorAccountTable rows={rows} onAction={setAction} /> : section === 'ads' ? <AdCampaignTable rows={rows} onAction={setAction} /> : section === 'payouts' ? <PayoutReviewTable rows={rows} onAction={setAction} /> : section === 'adAnalytics' ? <AdAnalytics data={(payload?.analytics ?? {}) as RecordValue} /> : <DataTable section={section} rows={rows} onView={handleView} onAction={setAction} />}
     </section> : null}{isLoading && section === 'overview' ? <LoadingState /> : null}
     {selected ? <DetailModal item={selected} onClose={() => setSelected(null)} /> : null}<Modal open={Boolean(action)} title={action?.title ?? 'Confirm action'} onClose={() => { if (!isSubmitting) { setAction(null); setActionReason('') } }}><p className="text-sm text-slate-600">{action?.description}</p><label className="mt-4 block text-sm font-medium text-slate-700">{action?.field === 'note' ? 'Note' : 'Reason'}<textarea value={actionReason} onChange={(event) => setActionReason(event.target.value)} rows={4} className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100" placeholder="Enter a reason for the audit trail..." /></label><div className="mt-4 flex justify-end gap-2"><Button variant="ghost" onClick={() => setAction(null)} disabled={isSubmitting}>Cancel</Button><Button onClick={() => void handleAction()} disabled={isSubmitting || !actionReason.trim()} icon={isSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : undefined}>Confirm</Button></div></Modal></div>
+}
+
+function EarningsSummary({ metrics }: { metrics: RecordValue }) {
+  const values = [
+    ['Estimated earnings', metrics.estimatedEarningsCents, 'Not available until an estimate source is configured.'],
+    ['Confirmed earnings', metrics.confirmedEarningsCents],
+    ['Pending payouts', metrics.pendingPayoutCents],
+    ['Withdrawable balance', metrics.withdrawableBalanceCents],
+    ['Paid out', metrics.paidCents],
+  ] as const;
+  return <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5" aria-label="Creator earnings summary">
+    {values.map(([label, amount, unavailableMessage]) => <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <p className="text-sm text-slate-500">{label}</p>
+      <p className="mt-2 text-xl font-semibold text-slate-900">{typeof amount === 'number' ? formatMoney(amount) : 'Not available'}</p>
+      {unavailableMessage ? <p className="mt-1 text-xs text-slate-500">{unavailableMessage}</p> : null}
+    </div>)}
+  </section>;
+}
+
+function RevenueSummary({ metrics }: { metrics: RecordValue }) {
+  const values = [
+    { label: 'Gross revenue', value: formatMoney(metrics.grossRevenue) },
+    { label: 'Platform revenue', value: formatMoney(metrics.platformRevenue) },
+    { label: 'Creator earnings', value: formatMoney(metrics.creatorNetEarnings) },
+    { label: 'Pending payouts', value: formatMoney(metrics.pendingPayouts) },
+    { label: 'Ad spend', value: formatMoney(metrics.adSpendCents) },
+    { label: 'Ad impressions', value: Number(metrics.adImpressions ?? 0).toLocaleString() },
+    { label: 'Ad clicks', value: Number(metrics.adClicks ?? 0).toLocaleString() },
+  ]
+
+  return <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Revenue summary">
+    {values.map(({ label, value }) => <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <p className="text-sm text-slate-500">{label}</p>
+      <p className="mt-2 text-xl font-semibold text-slate-900">{value}</p>
+    </div>)}
+  </section>
 }
 
 function CreatorAnalytics({ data, rows }: { data: RecordValue; rows: RecordValue[] }) {

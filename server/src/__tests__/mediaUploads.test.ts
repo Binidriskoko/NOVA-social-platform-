@@ -170,8 +170,8 @@ describe('authenticated media uploads', () => {
     expect(largePartial.headers['content-length']).toBe('1048576');
     expect(Buffer.from(largePartial.body)).toEqual(largeVideoBytes.subarray(0, 1024 * 1024));
     expect(getWholeObject).not.toHaveBeenCalled();
-    expect(getChunk).toHaveBeenCalledTimes(4);
-    expect(getChunk.mock.calls.every(([, , length]) => length <= 256 * 1024)).toBe(true);
+    expect(getChunk).toHaveBeenCalledTimes(1);
+    expect(getChunk.mock.calls.every(([, , length]) => length <= 1024 * 1024)).toBe(true);
     getWholeObject.mockRestore();
     getChunk.mockRestore();
     expect((await request(app)

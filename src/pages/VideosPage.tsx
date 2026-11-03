@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Bookmark, Heart, MessageCircle, Share2, X } from 'lucide-react'
 import { PostMedia } from '../components/PostMedia'
 import { Avatar } from '../components/ui/Avatar'
@@ -51,6 +51,7 @@ export function VideosPage() {
   const [posts, setPosts] = useState<Post[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [soundEnabled, setSoundEnabled] = useState(() => sessionStorage.getItem('novachat.video-sound') === 'on')
   const [activePostId, setActivePostId] = useState('')
   const [commentsPost, setCommentsPost] = useState<Post | null>(null)
   const [comments, setComments] = useState<VideoComment[]>([])
@@ -60,21 +61,30 @@ export function VideosPage() {
   const [notice, setNotice] = useState('')
   const feedRef = useRef<HTMLDivElement | null>(null)
 
-  useEffect(() => {
-    let mounted = true
-    apiRequest<{ posts: FeedPostRecord[] }>('/api/posts?limit=50')
-      .then(({ posts: records }) => {
-        if (!mounted) return
-        const videos = records.map(toPost).filter((post) => Boolean(post.image && isVideoPostMediaUrl(post.image)))
-        setPosts(videos)
-        setActivePostId(videos[0]?.id ?? '')
-      })
-      .catch((loadError: unknown) => {
-        if (mounted) setError(loadError instanceof Error ? loadError.message : 'Unable to load videos.')
-      })
-      .finally(() => { if (mounted) setLoading(false) })
-    return () => { mounted = false }
+  const loadVideos = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const { posts: records } = await apiRequest<{ posts: FeedPostRecord[] }>('/api/posts?limit=50')
+      const videos = records.map(toPost).filter((post) => Boolean(post.image && isVideoPostMediaUrl(post.image)))
+      setPosts(videos)
+      setActivePostId((current) => videos.some((post) => post.id === current) ? current : videos[0]?.id ?? '')
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Unable to load videos.')
+    } finally {
+      setLoading(false)
+    }
   }, [])
+
+  useEffect(() => {
+    void loadVideos()
+  }, [loadVideos])
+
+  const changeSoundPreference = (muted: boolean) => {
+    const enabled = !muted
+    sessionStorage.setItem('novachat.video-sound', enabled ? 'on' : 'off')
+    setSoundEnabled(enabled)
+  }
 
   useEffect(() => {
     const root = feedRef.current
@@ -177,7 +187,7 @@ export function VideosPage() {
       <h1 className="sr-only">Videos feed</h1>
       <div ref={feedRef} className="h-full min-h-0 snap-y snap-mandatory overflow-y-auto overscroll-contain scroll-smooth">
         {loading ? <div className="flex h-full items-center justify-center text-sm text-white/70" role="status">Loading videos…</div> : null}
-        {error ? <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center" role="alert"><p>{error}</p><button type="button" onClick={() => window.location.reload()} className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold">Retry</button></div> : null}
+        {error ? <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center" role="alert"><p>{error}</p><button type="button" onClick={() => void loadVideos()} className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold">Retry</button></div> : null}
         {!loading && !error && posts.length === 0 ? <div className="flex h-full flex-col items-center justify-center px-6 text-center"><p className="font-semibold">No videos yet</p><p className="mt-2 text-sm text-white/70">Video posts will appear here. Share a video from Home to get started.</p></div> : null}
         {!loading && !error ? posts.map((post) => (
           <section
@@ -185,7 +195,7 @@ export function VideosPage() {
             data-post-id={post.id}
             className="relative flex h-full snap-start items-center justify-center overflow-hidden bg-black pb-16 sm:pb-4"
           >
-            {post.image ? <PostMedia url={post.image} postId={post.id} measurementSource="videos" active={activePostId === post.id} autoPlay className="h-full max-h-full w-full max-w-full object-contain" alt={`Video by ${post.author.name}`} /> : null}
+            {post.image ? <PostMedia url={post.image} postId={post.id} measurementSource="videos" active={activePostId === post.id} autoPlay muted={!soundEnabled} onMutedChange={changeSoundPreference} className="h-full max-h-full w-full max-w-full object-contain" alt={`Video by ${post.author.name}`} /> : null}
             <div className="pointer-events-none absolute inset-x-0 bottom-20 bg-gradient-to-t from-black/75 via-black/25 to-transparent px-4 pb-5 pt-20 sm:bottom-4 sm:pb-5">
               <div className="pointer-events-auto flex max-w-[75%] items-center gap-2">
                 <Avatar src={post.author.avatar} alt={post.author.name} size="sm" />

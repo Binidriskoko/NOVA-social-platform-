@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Volume2, VolumeX } from 'lucide-react'
 import { apiRequest, fetchMediaBlob, resolveMediaUrl } from '../lib/api'
 import { isVideoPostMediaUrl } from '../lib/postMedia'
 
@@ -8,24 +9,46 @@ type PostMediaProps = {
   className?: string
   active?: boolean
   autoPlay?: boolean
+  muted?: boolean
+  onMutedChange?: (muted: boolean) => void
   postId?: string
   measurementSource?: 'feed' | 'videos' | 'explore' | 'profile' | 'home' | 'stories' | 'messages' | 'unknown'
 }
 
-export function PostMedia({ url, alt = 'Post attachment', className = '', active = true, autoPlay = false, postId, measurementSource = 'unknown' }: PostMediaProps) {
+export function PostMedia({ url, alt = 'Post attachment', className = '', active = true, autoPlay = false, muted, onMutedChange, postId, measurementSource = 'unknown' }: PostMediaProps) {
   const [loaded, setLoaded] = useState<{ url: string; source: string; error: string }>({ url: '', source: '', error: '' })
   const [playbackError, setPlaybackError] = useState('')
   const [playbackLoading, setPlaybackLoading] = useState(true)
   const [autoplayBlocked, setAutoplayBlocked] = useState(false)
-  const [muted, setMuted] = useState(autoPlay)
+  const [internalMuted, setInternalMuted] = useState(autoPlay)
+  const [autoplayMuted, setAutoplayMuted] = useState(false)
   const [retryCount, setRetryCount] = useState(0)
   const [loadTarget, setLoadTarget] = useState<HTMLElement | null>(null)
   const [nearViewport, setNearViewport] = useState(false)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const retryAttemptsRef = useRef(0)
+  const retryTimerRef = useRef<number | null>(null)
+  const savedPlaybackTimeRef = useRef(0)
   const sessionRef = useRef<{ sessionId: string; startRequest: Promise<boolean>; lastSentTime: number; lastObservedTime: number; heartbeatRequest: Promise<void> | null } | null>(null)
   const isUploaded = url.startsWith('/api/media/')
   const isVideo = isVideoPostMediaUrl(url)
   const streamsUploadedVideo = isVideo && url.startsWith('/api/media/files/')
+  const preferredMuted = muted ?? internalMuted
+  const currentMuted = preferredMuted || autoplayMuted
+
+  const updateMuted = (nextMuted: boolean, video?: HTMLVideoElement) => {
+    if (video) {
+      video.muted = nextMuted
+      if (!nextMuted && video.volume === 0) video.volume = 1
+    }
+    if (muted === undefined) setInternalMuted(nextMuted)
+    setAutoplayMuted(false)
+    onMutedChange?.(nextMuted)
+  }
+  const setVideoRef = useCallback((video: HTMLVideoElement | null) => {
+    videoRef.current = video
+    if (video) video.defaultMuted = autoPlay && preferredMuted
+  }, [autoPlay, preferredMuted])
 
   useEffect(() => {
     if (!isUploaded || streamsUploadedVideo || nearViewport || !loadTarget) return
@@ -67,18 +90,39 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
     setPlaybackError('')
     setPlaybackLoading(true)
     setAutoplayBlocked(false)
-    setMuted(autoPlay)
+    setAutoplayMuted(false)
+    retryAttemptsRef.current = 0
+    if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current)
+    retryTimerRef.current = null
+    return () => {
+      if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current)
+      retryTimerRef.current = null
+    }
   }, [autoPlay, url])
 
   useEffect(() => {
     const video = videoRef.current
     if (!video || !autoPlay) return
     if (active) {
-      void video.play().catch(() => setAutoplayBlocked(true))
+      void video.play().catch(() => {
+        setAutoplayBlocked(true)
+        if (!video.muted) {
+          video.muted = true
+          setAutoplayMuted(true)
+        }
+      })
     } else {
       video.pause()
+      video.removeAttribute('src')
+      video.load()
     }
-  }, [active, autoPlay, loaded.source, retryCount])
+  }, [active, autoPlay, loaded.source, retryCount, currentMuted])
+
+  useEffect(() => {
+    if (active || retryTimerRef.current === null) return
+    window.clearTimeout(retryTimerRef.current)
+    retryTimerRef.current = null
+  }, [active])
 
   useEffect(() => {
     const video = videoRef.current
@@ -192,6 +236,21 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
   const source = streamsUploadedVideo
     ? resolveMediaUrl(url)
     : isUploaded ? loaded.url === url ? loaded.source : '' : resolveMediaUrl(url)
+  const videoSource = autoPlay && !active ? '' : source
+  const scheduleRetry = () => {
+    setPlaybackLoading(false)
+    setPlaybackError('This video could not be played. Check your connection and retry.')
+    if (!autoPlay || !active || retryAttemptsRef.current >= 2) return
+    retryAttemptsRef.current += 1
+    const delay = 750 * 2 ** (retryAttemptsRef.current - 1)
+    setPlaybackError('Connection interrupted. Retrying…')
+    retryTimerRef.current = window.setTimeout(() => {
+      retryTimerRef.current = null
+      setPlaybackError('')
+      setPlaybackLoading(true)
+      setRetryCount((count) => count + 1)
+    }, delay)
+  }
   if (isUploaded && !streamsUploadedVideo && loaded.url !== url) return <div ref={setLoadTarget}>
     <p className="text-sm text-slate-500" role="status">{nearViewport ? 'Loading media…' : 'Media will load when near the screen…'}</p>
   </div>
@@ -207,27 +266,75 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
       <div className="relative">
         <video
           key={`${url}-${retryCount}`}
-          ref={videoRef}
-          src={source}
+          ref={setVideoRef}
+          src={videoSource || undefined}
           crossOrigin={streamsUploadedVideo ? 'use-credentials' : undefined}
           controls
-          muted={muted}
+          muted={currentMuted}
           autoPlay={autoPlay && active}
           loop={autoPlay}
           playsInline
-          preload={autoPlay && active ? 'auto' : 'none'}
+          preload={active ? 'metadata' : 'none'}
           className={className}
           aria-label={alt}
+          onClick={(event) => {
+            const video = event.currentTarget
+            const clickedNativeControls = video.controls && video.clientHeight > 48
+              && event.nativeEvent.offsetY >= video.clientHeight - 48
+            if (!autoPlay || !video.muted || clickedNativeControls) return
+            updateMuted(false, video)
+            if (video.paused) {
+              void video.play().catch(() => setAutoplayBlocked(true))
+            }
+          }}
+          onLoadedMetadata={(event) => {
+            const video = event.currentTarget
+            if (savedPlaybackTimeRef.current > 0 && savedPlaybackTimeRef.current < video.duration) {
+              video.currentTime = savedPlaybackTimeRef.current
+            }
+          }}
           onLoadedData={() => { setPlaybackLoading(false); setPlaybackError('') }}
-          onPlaying={() => { setPlaybackLoading(false); setPlaybackError(''); setAutoplayBlocked(false) }}
+          onPlaying={() => {
+            setPlaybackLoading(false)
+            setPlaybackError('')
+            setAutoplayBlocked(false)
+            if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current)
+            retryTimerRef.current = null
+            retryAttemptsRef.current = 0
+            savedPlaybackTimeRef.current = 0
+          }}
           onWaiting={() => setPlaybackLoading(true)}
           onCanPlay={() => setPlaybackLoading(false)}
-          onVolumeChange={(event) => setMuted(event.currentTarget.muted)}
+          onVolumeChange={(event) => {
+            const video = event.currentTarget
+            const nextMuted = video.muted || video.volume === 0
+            if (nextMuted !== currentMuted) updateMuted(nextMuted, video)
+          }}
           onError={() => {
-            setPlaybackLoading(false)
-            setPlaybackError('This video could not be played. Check your connection and retry.')
+            if (videoRef.current && Number.isFinite(videoRef.current.currentTime)) {
+              savedPlaybackTimeRef.current = videoRef.current.currentTime
+            }
+            scheduleRetry()
           }}
         />
+        {autoPlay ? (
+          <button
+            type="button"
+            className="absolute right-3 top-3 z-10 rounded-full bg-black/65 p-2 text-white"
+            aria-label={currentMuted ? 'Turn video sound on' : 'Turn video sound off'}
+            aria-pressed={!currentMuted}
+            onClick={(event) => {
+              event.stopPropagation()
+              const video = videoRef.current
+              updateMuted(!currentMuted, video ?? undefined)
+              if (video?.paused && active) {
+                void video.play().catch(() => setAutoplayBlocked(true))
+              }
+            }}
+          >
+            {currentMuted ? <VolumeX className="h-5 w-5" aria-hidden="true" /> : <Volume2 className="h-5 w-5" aria-hidden="true" />}
+          </button>
+        ) : null}
         {playbackLoading && autoPlay && active && !playbackError ? <p className="absolute left-3 top-3 rounded bg-black/70 px-2 py-1 text-xs text-white" role="status">Loading video…</p> : null}
         {autoplayBlocked && !playbackError ? <p className="absolute bottom-12 left-3 rounded bg-black/70 px-2 py-1 text-xs text-white" role="status">Playback did not start automatically. Press play to start.</p> : null}
         {playbackError ? (

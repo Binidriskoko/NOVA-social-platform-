@@ -10,7 +10,7 @@ import { requireActiveAccountIfAuthenticated, requireAuth } from '../middleware/
 
 const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
-const VIDEO_READ_CHUNK_BYTES = 256 * 1024;
+const VIDEO_READ_CHUNK_BYTES = 1024 * 1024;
 const attachmentTypes = new Map([
   ['audio/webm', 'webm'],
   ['audio/ogg', 'ogg'],

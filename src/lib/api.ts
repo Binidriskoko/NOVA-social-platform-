@@ -9,6 +9,26 @@ const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim()
 
 export const API_BASE_URL = configuredApiBaseUrl.replace(/\/$/, '')
 
+const API_READ_CACHE_TTL_MS = 30_000
+const API_READ_CACHE_LIMIT = 40
+const apiReadCache = new Map<string, { value: unknown; expiresAt: number }>()
+let apiReadCacheToken: string | null | undefined
+let apiReadCacheGeneration = 0
+
+function invalidateApiReadCache() {
+  apiReadCache.clear()
+  apiReadCacheGeneration += 1
+}
+
+function setCachedApiRead(key: string, value: unknown) {
+  apiReadCache.delete(key)
+  apiReadCache.set(key, { value, expiresAt: Date.now() + API_READ_CACHE_TTL_MS })
+  if (apiReadCache.size > API_READ_CACHE_LIMIT) {
+    const oldestKey = apiReadCache.keys().next().value
+    if (oldestKey !== undefined) apiReadCache.delete(oldestKey)
+  }
+}
+
 export function resolveMediaUrl(url: string | null | undefined) {
   if (!url) return '';
   return url.startsWith('/api/media/') ? `${API_BASE_URL}${url}` : url;
@@ -183,6 +203,22 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   const maxAttempts = isSafeRead ? 3 : 1
   const isCredentialSubmission = path === '/api/auth/login' || path === '/api/auth/register'
   const accessToken = isCredentialSubmission ? null : getStoredAccessToken()
+  if (apiReadCacheToken !== accessToken) {
+    invalidateApiReadCache()
+    apiReadCacheToken = accessToken
+  }
+  const cacheableRead = isSafeRead && !options.signal && !path.startsWith('/api/auth/')
+  if (!isSafeRead) invalidateApiReadCache()
+  if (cacheableRead) {
+    const cached = apiReadCache.get(path)
+    if (cached && cached.expiresAt > Date.now()) {
+      apiReadCache.delete(path)
+      apiReadCache.set(path, cached)
+      return cached.value as T
+    }
+    if (cached) apiReadCache.delete(path)
+  }
+  const cacheGeneration = apiReadCacheGeneration
 
   if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
@@ -275,6 +311,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   if (!response.ok && !hasJsonContentType) {
     if (response.status === 401) {
       clearStoredAccessToken()
+      invalidateApiReadCache()
     }
 
     const isHtmlResponse = contentType === 'text/html'
@@ -323,6 +360,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   if (!response.ok) {
     if (response.status === 401) {
       clearStoredAccessToken()
+      invalidateApiReadCache()
     }
     const fallback = response.status === 429
       ? 'The novachat API is rate limiting requests (HTTP 429). Please wait and try again.'
@@ -330,6 +368,12 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
         ? `The novachat API is temporarily unavailable (HTTP ${response.status}). Please try again shortly.`
         : `The novachat API request failed with HTTP ${response.status}.`
     throw new ApiError(response.status, extractErrorMessage(payload, fallback), payload)
+  }
+
+  if (cacheableRead
+    && cacheGeneration === apiReadCacheGeneration
+    && !/(?:^|,)\s*(?:no-store|no-cache)\b/i.test(response.headers.get('cache-control') ?? '')) {
+    setCachedApiRead(path, payload)
   }
 
   return payload as T

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from 'react'
+import { useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PostMedia } from '../src/components/PostMedia'
@@ -36,6 +37,7 @@ let revokeObjectUrlDescriptor: PropertyDescriptor | undefined
 
 beforeEach(() => {
   TestIntersectionObserver.instances = []
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   mocks.apiRequest.mockReset()
   mocks.fetchMediaBlob.mockReset().mockResolvedValue(new Blob(['image']))
   mocks.resolveMediaUrl.mockClear()
@@ -66,6 +68,11 @@ async function renderMedia(props: Parameters<typeof PostMedia>[0]) {
   await act(async () => root?.render(<PostMedia {...props} />))
 }
 
+function VideoWithSoundPreference({ initiallyMuted = true }: { initiallyMuted?: boolean }) {
+  const [muted, setMuted] = useState(initiallyMuted)
+  return <PostMedia url="https://cdn.example.test/sound.mp4" active autoPlay muted={muted} onMutedChange={(nextMuted) => setMuted(nextMuted)} />
+}
+
 describe('PostMedia loading and playback', () => {
   it('waits until an uploaded image nears the viewport before fetching it', async () => {
     await renderMedia({ url: '/api/media/uploads/image.jpg' })
@@ -89,8 +96,70 @@ describe('PostMedia loading and playback', () => {
 
     expect(host?.querySelector('video')?.getAttribute('preload')).toBe('none')
     expect(host?.querySelector('video')?.autoplay).toBe(false)
+    expect(host?.querySelector('video')?.getAttribute('src')).toBeNull()
     expect(setInterval).not.toHaveBeenCalled()
     expect(mocks.fetchMediaBlob).not.toHaveBeenCalled()
+  })
+
+  it('starts inline and muted, then lets the sound control enable playback audio', async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () => root?.render(<VideoWithSoundPreference />))
+
+    const video = host.querySelector('video')
+    expect(video?.muted).toBe(true)
+    expect(video?.defaultMuted).toBe(true)
+    expect(video?.volume).toBe(1)
+    expect(video?.hasAttribute('playsinline')).toBe(true)
+    expect(video?.autoplay).toBe(true)
+    expect(play).toHaveBeenCalled()
+
+    await act(async () => {
+      host?.querySelector<HTMLButtonElement>('[aria-label="Turn video sound on"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(video?.muted).toBe(false)
+    expect(host.querySelector('[aria-label="Turn video sound off"]')).not.toBeNull()
+  })
+
+  it('unmutes when a user taps the active video outside its native controls', async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () => root?.render(<VideoWithSoundPreference />))
+
+    await act(async () => {
+      host?.querySelector('video')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.querySelector('video')?.muted).toBe(false)
+    expect(host.querySelector('[aria-label="Turn video sound off"]')).not.toBeNull()
+    expect(play).toHaveBeenCalled()
+  })
+
+  it('falls back to muted autoplay when audible autoplay is blocked', async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play')
+      .mockRejectedValueOnce(new Error('Autoplay blocked'))
+      .mockResolvedValue()
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () => root?.render(<VideoWithSoundPreference initiallyMuted={false} />))
+    await act(async () => { await Promise.resolve() })
+
+    expect(play).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('video')?.muted).toBe(true)
+    expect(host.querySelector('[aria-label="Turn video sound on"]')).not.toBeNull()
+
+    await act(async () => {
+      host?.querySelector<HTMLButtonElement>('[aria-label="Turn video sound on"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(host.querySelector('video')?.muted).toBe(false)
   })
 
   it('retries autoplay after playback retry remounts the video element', async () => {

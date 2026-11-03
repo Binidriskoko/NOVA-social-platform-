@@ -203,20 +203,25 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   const maxAttempts = isSafeRead ? 3 : 1
   const isCredentialSubmission = path === '/api/auth/login' || path === '/api/auth/register'
   const accessToken = isCredentialSubmission ? null : getStoredAccessToken()
+  const routeScope = typeof window === 'undefined' ? '' : window.location.pathname
   if (apiReadCacheToken !== accessToken) {
     invalidateApiReadCache()
     apiReadCacheToken = accessToken
   }
-  const cacheableRead = isSafeRead && !options.signal && !path.startsWith('/api/auth/')
+  const cacheableRead = isSafeRead
+    && !options.signal
+    && !path.startsWith('/api/auth/')
+    && routeScope !== '/'
+  const cacheKey = `${routeScope}:${path}`
   if (!isSafeRead) invalidateApiReadCache()
   if (cacheableRead) {
-    const cached = apiReadCache.get(path)
+    const cached = apiReadCache.get(cacheKey)
     if (cached && cached.expiresAt > Date.now()) {
-      apiReadCache.delete(path)
-      apiReadCache.set(path, cached)
+      apiReadCache.delete(cacheKey)
+      apiReadCache.set(cacheKey, cached)
       return cached.value as T
     }
-    if (cached) apiReadCache.delete(path)
+    if (cached) apiReadCache.delete(cacheKey)
   }
   const cacheGeneration = apiReadCacheGeneration
 
@@ -373,7 +378,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   if (cacheableRead
     && cacheGeneration === apiReadCacheGeneration
     && !/(?:^|,)\s*(?:no-store|no-cache)\b/i.test(response.headers.get('cache-control') ?? '')) {
-    setCachedApiRead(path, payload)
+    setCachedApiRead(cacheKey, payload)
   }
 
   return payload as T

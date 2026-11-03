@@ -12,6 +12,7 @@ function jsonResponse(value: unknown, cacheControl?: string) {
 describe('API read cache', () => {
   beforeEach(() => {
     localStorage.clear()
+    window.history.replaceState(null, '', '/feature')
     vi.stubGlobal('fetch', vi.fn())
   })
 
@@ -58,6 +59,18 @@ describe('API read cache', () => {
 
     await expect(apiRequest('/api/test/no-store')).resolves.toEqual({ value: 'first' })
     await expect(apiRequest('/api/test/no-store')).resolves.toEqual({ value: 'second' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps Home feed reads uncached', async () => {
+    window.history.replaceState(null, '', '/')
+    const fetchMock = vi.mocked(fetch)
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ value: 'first Home feed' }))
+      .mockResolvedValueOnce(jsonResponse({ value: 'current Home feed' }))
+
+    await expect(apiRequest('/api/posts?limit=50')).resolves.toEqual({ value: 'first Home feed' })
+    await expect(apiRequest('/api/posts?limit=50')).resolves.toEqual({ value: 'current Home feed' })
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })

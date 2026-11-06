@@ -3,7 +3,7 @@ import { Readable } from 'node:stream';
 import multer from 'multer';
 import sharp from 'sharp';
 import env from '../config/env.js';
-import { getMediaStorage, MediaStorageUnavailableError, videoMediaKeyFromUrl } from '../lib/mediaStorage.js';
+import { getMediaStorage, imageFileMediaKeyFromUrl, MediaStorageUnavailableError, videoMediaKeyFromUrl } from '../lib/mediaStorage.js';
 import { isDatabaseAvailable, prisma } from '../lib/prisma.js';
 import { socialStore } from '../lib/socialStore.js';
 import { requireActiveAccountIfAuthenticated, requireAuth } from '../middleware/auth.js';
@@ -158,7 +158,7 @@ async function canReadAttachment(key: string, ownerUserId: string, viewerId: str
       ),
     );
     if (referencedByMessage) return true;
-    if (!videoMediaKeyFromUrl(mediaUrl)) return false;
+    if (!videoMediaKeyFromUrl(mediaUrl) && !imageFileMediaKeyFromUrl(mediaUrl)) return false;
     const isBlocked = socialStore.state.blocks.some((block) =>
       (block.blockerId === viewerId && block.blockedId === ownerUserId)
       || (block.blockerId === ownerUserId && block.blockedId === viewerId),
@@ -183,7 +183,7 @@ async function canReadAttachment(key: string, ownerUserId: string, viewerId: str
     select: { id: true },
   });
   if (message) return true;
-  if (!videoMediaKeyFromUrl(mediaUrl)) return false;
+  if (!videoMediaKeyFromUrl(mediaUrl) && !imageFileMediaKeyFromUrl(mediaUrl)) return false;
   const [blocked, follow, post] = await Promise.all([
     prisma.block.findFirst({
       where: { OR: [{ blockerId: viewerId, blockedId: ownerUserId }, { blockerId: ownerUserId, blockedId: viewerId }] },
@@ -372,7 +372,7 @@ mediaRouter.get('/avatars/:key', requireActiveAccountIfAuthenticated, async (req
 mediaRouter.get('/files/:key', requireAuth, async (req, res, next) => {
   try {
     const key = String(req.params.key);
-    if (!/^[0-9a-f-]{36}\.(?:webm|mp4|ogg|mp3|m4a|pdf|docx)$/.test(key)) return res.status(404).end();
+    if (!/^[0-9a-f-]{36}\.(?:jpe?g|png|webp|webm|mp4|ogg|mp3|m4a|pdf|docx)$/.test(key)) return res.status(404).end();
     const storage = getMediaStorage(env.NODE_ENV);
     const metadata = await storage.getMetadata(key);
     if (!metadata || !metadata.ownerUserId || !(await canReadAttachment(key, metadata.ownerUserId, req.user!.id))) {

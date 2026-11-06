@@ -186,6 +186,11 @@ export function attachmentMediaKeyFromUrl(url: string) {
   return match?.[1] ?? null;
 }
 
+export function imageFileMediaKeyFromUrl(url: string) {
+  const match = /^\/api\/media\/files\/([0-9a-f-]{36}\.(?:jpe?g|png|webp))$/.exec(url);
+  return match?.[1] ?? null;
+}
+
 export function videoMediaKeyFromUrl(url: string) {
   const match = /^\/api\/media\/files\/([0-9a-f-]{36}\.(?:webm|mp4|ogg))$/.exec(url);
   return match?.[1] ?? null;
@@ -193,7 +198,7 @@ export function videoMediaKeyFromUrl(url: string) {
 
 export async function uploadedMediaBelongsTo(url: string, userId: string, nodeEnv: string) {
   if (!url.startsWith('/api/media/')) return true;
-  const key = mediaKeyFromUrl(url) ?? attachmentMediaKeyFromUrl(url);
+  const key = mediaKeyFromUrl(url) ?? imageFileMediaKeyFromUrl(url) ?? attachmentMediaKeyFromUrl(url);
   if (!key) return false;
 
   const object = await getMediaStorage(nodeEnv).get(key);

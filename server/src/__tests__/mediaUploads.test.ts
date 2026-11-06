@@ -96,6 +96,106 @@ describe('authenticated media uploads', () => {
     expect((await request(app).get(messageUpload.body.mediaUrl).set('Cookie', bob.auth)).status).toBe(404);
   });
 
+  it('serves authorized media to a freshly registered account without exposing private posts', async () => {
+    const owner = await register('FreshMediaOwner');
+    const registration = await request(app).post('/api/auth/register').send({
+      name: 'Fresh Media Viewer',
+      email: 'fresh-media-viewer@example.com',
+      password: 'Password123',
+      communityRulesAccepted: true,
+    });
+    expect(registration.status).toBe(201);
+    const viewerAuthorization = `Bearer ${registration.body.token}`;
+    const imageBytes = await sharp({
+      create: { width: 4, height: 4, channels: 3, background: '#3756a8' },
+    }).png().toBuffer();
+    const videoBytes = Buffer.from('0000ftypisom');
+
+    const publicImage = await request(app)
+      .post('/api/media/uploads')
+      .set('Cookie', owner.auth)
+      .attach('file', imageBytes, { filename: 'public.png', contentType: 'image/png' });
+    const publicVideo = await request(app)
+      .post('/api/media/videos')
+      .set('Cookie', owner.auth)
+      .attach('file', videoBytes, { filename: 'public.mp4', contentType: 'video/mp4' });
+    expect(publicImage.status).toBe(201);
+    expect(publicVideo.status).toBe(201);
+
+    expect((await request(app).post('/api/posts').set('Cookie', owner.auth).send({
+      content: 'Public photo',
+      imageUrl: publicImage.body.mediaUrl,
+    })).status).toBe(201);
+    expect((await request(app).post('/api/posts').set('Cookie', owner.auth).send({
+      content: 'Public video',
+      imageUrl: publicVideo.body.mediaUrl,
+    })).status).toBe(201);
+    expect((await request(app).get(publicImage.body.mediaUrl).set('Authorization', viewerAuthorization)).status).toBe(200);
+    expect((await request(app).get(publicVideo.body.mediaUrl).set('Authorization', viewerAuthorization)).status).toBe(200);
+
+    const privateImage = await request(app)
+      .post('/api/media/uploads')
+      .set('Cookie', owner.auth)
+      .attach('file', imageBytes, { filename: 'private.png', contentType: 'image/png' });
+    const privateVideo = await request(app)
+      .post('/api/media/videos')
+      .set('Cookie', owner.auth)
+      .attach('file', videoBytes, { filename: 'private.mp4', contentType: 'video/mp4' });
+    expect(privateImage.status).toBe(201);
+    expect(privateVideo.status).toBe(201);
+    expect((await request(app).post('/api/posts').set('Cookie', owner.auth).send({
+      content: 'Private photo',
+      imageUrl: privateImage.body.mediaUrl,
+      visibility: 'PRIVATE',
+    })).status).toBe(201);
+    expect((await request(app).post('/api/posts').set('Cookie', owner.auth).send({
+      content: 'Private video',
+      imageUrl: privateVideo.body.mediaUrl,
+      visibility: 'PRIVATE',
+    })).status).toBe(201);
+    expect((await request(app).get(privateImage.body.mediaUrl).set('Authorization', viewerAuthorization)).status).toBe(404);
+    expect((await request(app).get(privateVideo.body.mediaUrl).set('Authorization', viewerAuthorization)).status).toBe(404);
+  });
+
+  it('serves legacy feed images from the files endpoint with cookie or bearer auth while protecting private posts', async () => {
+    const owner = await register('LegacyFileImageOwner');
+    const registration = await request(app).post('/api/auth/register').send({
+      name: 'New File Image Viewer',
+      email: 'new-file-image-viewer@example.com',
+      password: 'Password123',
+      communityRulesAccepted: true,
+    });
+    expect(registration.status).toBe(201);
+    const viewerAuthorization = `Bearer ${registration.body.token}`;
+    const imageBytes = await sharp({
+      create: { width: 4, height: 4, channels: 3, background: '#3756a8' },
+    }).webp().toBuffer();
+    const image = await getMediaStorage('test').putAttachment(imageBytes, 'image/webp', 'webp', owner.user.id);
+
+    const publicPost = await request(app).post('/api/posts').set('Cookie', owner.auth).send({
+      content: 'Legacy files image',
+      imageUrl: image.publicUrl,
+    });
+    expect(publicPost.status).toBe(201);
+
+    const feed = await request(app).get('/api/posts');
+    const feedPost = feed.body.posts.find((post: { id: string }) => post.id === publicPost.body.post.id);
+    expect(feedPost.imageUrl).toBe(image.publicUrl);
+    expect((await request(app).get(feedPost.imageUrl).set('Authorization', viewerAuthorization)).status).toBe(200);
+    expect((await request(app).get(feedPost.imageUrl).set('Cookie', cookie(registration))).status).toBe(200);
+
+    const privateImage = await getMediaStorage('test').putAttachment(imageBytes, 'image/webp', 'webp', owner.user.id);
+    const privatePost = await request(app).post('/api/posts').set('Cookie', owner.auth).send({
+      content: 'Private legacy files image',
+      imageUrl: privateImage.publicUrl,
+      visibility: 'PRIVATE',
+    });
+    expect(privatePost.status).toBe(201);
+    expect((await request(app).get(privateImage.publicUrl).set('Authorization', viewerAuthorization)).status).toBe(404);
+    expect((await request(app).get(privateImage.publicUrl).set('Cookie', owner.auth)).status).toBe(200);
+    expect((await request(app).get(privateImage.publicUrl)).status).toBe(401);
+  });
+
   it('uploads voice, video, PDF, and DOCX attachments and serves them only to message participants', async () => {
     const alice = await register('AttachmentAlice');
     const bob = await register('AttachmentBob');

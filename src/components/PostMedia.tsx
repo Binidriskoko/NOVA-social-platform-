@@ -22,10 +22,13 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
   const [autoplayBlocked, setAutoplayBlocked] = useState(false)
   const [internalMuted, setInternalMuted] = useState(autoPlay)
   const [autoplayMuted, setAutoplayMuted] = useState(false)
+  const [authenticatedVideoSource, setAuthenticatedVideoSource] = useState<{ url: string; source: string } | null>(null)
   const [retryCount, setRetryCount] = useState(0)
   const [loadTarget, setLoadTarget] = useState<HTMLElement | null>(null)
   const [nearViewport, setNearViewport] = useState(false)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const videoFallbackRequestedRef = useRef('')
+  const videoFallbackControllerRef = useRef<AbortController | null>(null)
   const retryAttemptsRef = useRef(0)
   const retryTimerRef = useRef<number | null>(null)
   const savedPlaybackTimeRef = useRef(0)
@@ -35,6 +38,21 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
   const streamsUploadedVideo = isVideo && url.startsWith('/api/media/files/')
   const preferredMuted = muted ?? internalMuted
   const currentMuted = preferredMuted || autoplayMuted
+
+  useEffect(() => {
+    videoFallbackControllerRef.current?.abort()
+    videoFallbackControllerRef.current = null
+    videoFallbackRequestedRef.current = ''
+    setAuthenticatedVideoSource(null)
+    return () => videoFallbackControllerRef.current?.abort()
+  }, [url])
+
+  useEffect(() => {
+    const source = authenticatedVideoSource?.source
+    return () => {
+      if (source) URL.revokeObjectURL(source)
+    }
+  }, [authenticatedVideoSource])
 
   const updateMuted = (nextMuted: boolean, video?: HTMLVideoElement) => {
     if (video) {
@@ -234,7 +252,7 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
   }, [isVideo, measurementSource, postId, retryCount, url])
 
   const source = streamsUploadedVideo
-    ? resolveMediaUrl(url)
+    ? authenticatedVideoSource?.url === url ? authenticatedVideoSource.source : resolveMediaUrl(url)
     : isUploaded ? loaded.url === url ? loaded.source : '' : resolveMediaUrl(url)
   const videoSource = autoPlay && !active ? '' : source
   const scheduleRetry = () => {
@@ -314,6 +332,21 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
             if (videoRef.current && Number.isFinite(videoRef.current.currentTime)) {
               savedPlaybackTimeRef.current = videoRef.current.currentTime
             }
+            if (streamsUploadedVideo && authenticatedVideoSource?.url !== url && videoFallbackRequestedRef.current !== url) {
+              videoFallbackRequestedRef.current = url
+              setPlaybackError('')
+              setPlaybackLoading(true)
+              const controller = new AbortController()
+              videoFallbackControllerRef.current = controller
+              void fetchMediaBlob(url, controller.signal).then((blob) => {
+                if (!controller.signal.aborted) {
+                  setAuthenticatedVideoSource({ url, source: URL.createObjectURL(blob) })
+                }
+              }).catch(() => {
+                if (!controller.signal.aborted) scheduleRetry()
+              })
+              return
+            }
             scheduleRetry()
           }}
         />
@@ -344,6 +377,8 @@ export function PostMedia({ url, alt = 'Post attachment', className = '', active
               setPlaybackError('')
               setPlaybackLoading(true)
               setAutoplayBlocked(false)
+              setAuthenticatedVideoSource(null)
+              videoFallbackRequestedRef.current = ''
               setRetryCount((count) => count + 1)
             }}>Retry</button>
           </div>

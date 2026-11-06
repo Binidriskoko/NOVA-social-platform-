@@ -101,6 +101,21 @@ describe('PostMedia loading and playback', () => {
     expect(mocks.fetchMediaBlob).not.toHaveBeenCalled()
   })
 
+  it('falls back to bearer-authenticated media loading when a streamed video request fails', async () => {
+    await renderMedia({ url: '/api/media/files/clip.mp4' })
+
+    const video = host?.querySelector('video')
+    expect(video?.getAttribute('src')).toBe('https://api.test/api/media/files/clip.mp4')
+
+    await act(async () => {
+      video?.dispatchEvent(new Event('error'))
+      await Promise.resolve()
+    })
+
+    expect(mocks.fetchMediaBlob).toHaveBeenCalledWith('/api/media/files/clip.mp4', expect.any(AbortSignal))
+    expect(host?.querySelector('video')?.getAttribute('src')).toBe('blob:post-media')
+  })
+
   it('starts inline and muted, then lets the sound control enable playback audio', async () => {
     const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
     host = document.createElement('div')

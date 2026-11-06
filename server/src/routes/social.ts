@@ -7,7 +7,7 @@ import { socialStore } from '../lib/socialStore.js';
 import { reviewContentForSafety } from '../lib/moderation.js';
 import { isNotificationEnabled } from '../lib/platform.js';
 import { requireAuth, requireActiveAccountIfAuthenticated } from '../middleware/auth.js';
-import { mediaKeyFromUrl, uploadedMediaBelongsTo, uploadedVideoBelongsTo, videoMediaKeyFromUrl } from '../lib/mediaStorage.js';
+import { imageFileMediaKeyFromUrl, mediaKeyFromUrl, uploadedMediaBelongsTo, uploadedVideoBelongsTo, videoMediaKeyFromUrl } from '../lib/mediaStorage.js';
 import { decryptPrivateAddress, encryptPrivateAddress } from '../lib/privateProfile.js';
 
 function isSafeMediaUrl(value: string) {
@@ -17,6 +17,10 @@ function isSafeMediaUrl(value: string) {
   } catch {
     return false;
   }
+}
+
+function isSafePostMediaUrl(value: string) {
+  return Boolean(imageFileMediaKeyFromUrl(value)) || isSafeMediaUrl(value);
 }
 
 const updateProfileSchema = z.object({
@@ -38,7 +42,7 @@ const privateProfileSchema = z.object({
 
 const createPostSchema = z.object({
   content: z.string().trim().min(1).max(2500),
-  imageUrl: z.string().trim().max(500).refine(isSafeMediaUrl, 'Use an HTTPS image URL or an uploaded novachat image or video.').optional(),
+  imageUrl: z.string().trim().max(500).refine(isSafePostMediaUrl, 'Use an HTTPS image URL or an uploaded novachat image or video.').optional(),
   visibility: z.enum(['PUBLIC', 'FOLLOWERS', 'PRIVATE']).default('PUBLIC'),
 });
 
@@ -54,7 +58,7 @@ const createStatusSchema = z.object({
 
 const updatePostSchema = z.object({
   content: z.string().trim().min(1).max(2500).optional(),
-  imageUrl: z.string().trim().max(500).refine(isSafeMediaUrl, 'Use an HTTPS image URL or an uploaded novachat image or video.').optional(),
+  imageUrl: z.string().trim().max(500).refine(isSafePostMediaUrl, 'Use an HTTPS image URL or an uploaded novachat image or video.').optional(),
   visibility: z.enum(['PUBLIC', 'FOLLOWERS', 'PRIVATE']).optional(),
 });
 
